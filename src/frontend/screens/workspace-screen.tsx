@@ -299,12 +299,23 @@ const WorkspaceScreen = () => {
         })
         return
       }
-      const ok = await forceThenReleaseDebugVariable(debuggerPort, compositeKey, variableIndex, buffer, variableType)
+      const high = typeof value === 'boolean' ? value : isForcedValueHigh(value)
+      const alreadyForced = debugForcedVariables.has(compositeKey)
+      let ok: boolean
+      if (alreadyForced) {
+        // The variable is pinned: an edit must update the forced value while
+        // keeping it locked (no release).
+        ok = await forceDebugVariable(debuggerPort, compositeKey, variableIndex, buffer, high, variableType)
+      } else {
+        // Not forced: write the value as force-then-release so the PLC
+        // program may overwrite it from the next cycle on.
+        ok = await forceThenReleaseDebugVariable(debuggerPort, compositeKey, variableIndex, buffer, variableType)
+      }
       if (!ok) {
         toast({ title: 'Value write failed', description: 'The debugger rejected the write.', variant: 'fail' })
       }
     },
-    [debugVariableIndexes, debuggerPort],
+    [debugVariableIndexes, debugForcedVariables, debuggerPort],
   )
 
   const handleToggleForce = useCallback(
