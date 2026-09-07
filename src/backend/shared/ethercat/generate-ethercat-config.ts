@@ -246,34 +246,40 @@ function buildSlave(device: ConfiguredEtherCATDevice, index: number): RuntimeSla
   const txPdos = device.txPdos ? convertPdos(device.txPdos) : []
   // Startup SDO sources:
   //  - Flat devices: `sdoConfigurations` (extracted from the CoE dictionary).
-  //  - Modular devices (current): `sdoConfigurations` already holds the
-  //    module-derived rows (per populated slot) -- the single source.
-  //  - Modular devices persisted before that model: `sdoConfigurations` may
-  //    still be the raw dictionary dump while `moduleSdoConfigurations` holds
-  //    the derived activation rows; merge + dedupe (later wins) reproduces the
-  //    old "module rows override the dictionary zeros" semantics.
+  //  - Modular devices: `sdoConfigurations` is the full CoE dictionary overlaid
+  //    with the module InitCmd rows (module rows win on shared object entries;
+  //    module-only entries are appended) -- the same list the Startup
+  //    Parameters tab shows.  Module rows carry `applyAfterOperational` so the
+  //    runtime replays them after OPERATIONAL.
+  //  - Modular devices persisted before that merge (pure dictionary dump with a
+  //    separate `moduleSdoConfigurations`) fall back to merging on export.
   const isModular = (device.moduleSlots?.length ?? 0) > 0
-  const rowsHaveModuleSource = (device.sdoConfigurations ?? []).some(
-    (entry) => entry.moduleSlot !== undefined || entry.applyAfterOperational === true,
-  )
   let sdoConfigurations: SDOConfigurationEntry[]
-  if (isModular && !rowsHaveModuleSource) {
-    // Legacy merge: later entries (module-derived) override earlier
-    // dictionary rows for the same object; duplicates collapse to one row.
-    const combined = [...(device.sdoConfigurations ?? []), ...(device.moduleSdoConfigurations ?? [])]
-    const unique: SDOConfigurationEntry[] = []
-    const indexByKey = new Map<string, number>()
-    for (const entry of combined) {
-      const key = `${entry.index}|${entry.subIndex}`
-      const existing = indexByKey.get(key)
-      if (existing !== undefined) {
-        unique[existing] = entry
-      } else {
-        indexByKey.set(key, unique.length)
-        unique.push(entry)
+  if (isModular) {
+    const dictRows = device.sdoConfigurations ?? []
+    const alreadyMerged = dictRows.some(
+      (entry) => entry.moduleSlot !== undefined || entry.applyAfterOperational === true,
+    )
+    if (alreadyMerged) {
+      sdoConfigurations = dictRows
+    } else {
+      // Later (module) entries override earlier dictionary rows; duplicates
+      // collapse to one row.
+      const combined = [...dictRows, ...(device.moduleSdoConfigurations ?? [])]
+      const unique: SDOConfigurationEntry[] = []
+      const indexByKey = new Map<string, number>()
+      for (const entry of combined) {
+        const key = `${entry.index}|${entry.subIndex}`
+        const existing = indexByKey.get(key)
+        if (existing !== undefined) {
+          unique[existing] = entry
+        } else {
+          indexByKey.set(key, unique.length)
+          unique.push(entry)
+        }
       }
+      sdoConfigurations = unique
     }
-    sdoConfigurations = unique
   } else {
     sdoConfigurations = device.sdoConfigurations ?? []
   }

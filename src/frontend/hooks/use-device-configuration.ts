@@ -9,7 +9,6 @@ import {
   buildModuleSdoConfigurations,
   defaultModuleSelections,
   mergeModuleSdoRows,
-  reconcileModuleSdoConfigurations,
 } from '@root/backend/shared/ethercat/module-process-image'
 import { extractDefaultSdoConfigurations } from '@root/backend/shared/ethercat/sdo-config-defaults'
 import { toast } from '@root/frontend/components/_features/[app]/toast/use-toast'
@@ -120,18 +119,21 @@ export function useDeviceConfiguration({
             })
           }
 
-          // Legacy migration: a modular slave persisted before module-driven
-          // startup parameters kept only the raw device CoE dictionary dump in
-          // `sdoConfigurations` and derived the per-port activation values into
-          // `moduleSdoConfigurations`.  Keep the dictionary rows verbatim and
-          // overlay module-derived rows (same-module overrides preserved) so
-          // the runtime receives the identical startup SDO set as before.
+          // A modular slave's Startup Parameters list is the device's full CoE
+          // dictionary overlaid with the module rows: the module InitCmd values
+          // must be visible in the list.  Projects whose `sdoConfigurations`
+          // has not had the module rows merged yet (pure dictionary dump and/or
+          // a separate `moduleSdoConfigurations`) get them merged here.
           if ((result.device.slots?.length ?? 0) > 0 && device.moduleSlots && device.moduleSelections) {
             const stored = device.sdoConfigurations
-            if (stored && stored.length > 0 && !stored.some((entry) => entry.moduleSlot)) {
-              const rows = buildModuleSdoConfigurations(result.device, device.moduleSelections)
+            const alreadyMerged = (stored ?? []).some((entry) => entry.moduleSlot)
+            const hasPlacedModule = device.moduleSelections.some(
+              (sel) => Number.parseInt(sel.moduleIdent.replace(/^#?0x/i, ''), 16) !== 0,
+            )
+            if (!alreadyMerged && (hasPlacedModule || (device.moduleSdoConfigurations?.length ?? 0) > 0)) {
+              const selections = device.moduleSelections
               onEnrichDeviceRef.current({
-                sdoConfigurations: mergeModuleSdoRows(stored, reconcileModuleSdoConfigurations(stored, rows)),
+                sdoConfigurations: mergeModuleSdoRows(stored, buildModuleSdoConfigurations(result.device, selections)),
                 moduleSdoConfigurations: undefined,
               })
             }

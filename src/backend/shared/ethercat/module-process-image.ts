@@ -183,69 +183,20 @@ export function buildModuleSdoConfigurations(
 }
 
 /**
- * Rebuild a module-derived startup-parameter list while preserving the
- * operator's overrides across a module re-selection.
- *
- * An override (value != defaultValue) is carried over when its row still
- * exists AND -- for module InitCmd rows -- the same module remains in the same
- * slot (keyed by moduleSlot|moduleIdent|index|subindex).  Switching the module
- * of a slot therefore resets that slot to the new module's defaults.  Rows
- * without module metadata (legacy dictionary-derived rows, e.g. from a project
- * that predates module support) match by index|subindex only, so hand-entered
- * ISDU values migrate onto the module rows.  The 0x3000 power rows are keyed
- * by subindex only (they belong to the port, not to a single module).
- */
-export function reconcileModuleSdoConfigurations(
-  prev: SDOConfigurationEntry[] | undefined,
-  next: SDOConfigurationEntry[],
-): SDOConfigurationEntry[] {
-  if (!prev || prev.length === 0) return next
-
-  const powerOverrides = new Map<number, string>()
-  const moduleOverrides = new Map<string, string>()
-  const legacyOverrides = new Map<string, string>()
-
-  for (const entry of prev) {
-    if (entry.value === '' || entry.value === entry.defaultValue) continue
-    if (entry.index === '0x3000') {
-      powerOverrides.set(entry.subIndex, entry.value)
-    } else if (entry.moduleSlot) {
-      moduleOverrides.set(
-        `${entry.moduleSlot}|${entry.moduleIdent ?? ''}|${entry.index}|${entry.subIndex}`,
-        entry.value,
-      )
-    } else {
-      legacyOverrides.set(`${entry.index}|${entry.subIndex}`, entry.value)
-    }
-  }
-  if (powerOverrides.size === 0 && moduleOverrides.size === 0 && legacyOverrides.size === 0) return next
-
-  return next.map((entry) => {
-    if (entry.index === '0x3000') {
-      const override = powerOverrides.get(entry.subIndex)
-      return override !== undefined ? { ...entry, value: override } : entry
-    }
-    const override =
-      moduleOverrides.get(`${entry.moduleSlot}|${entry.moduleIdent ?? ''}|${entry.index}|${entry.subIndex}`) ??
-      legacyOverrides.get(`${entry.index}|${entry.subIndex}`)
-    return override !== undefined ? { ...entry, value: override } : entry
-  })
-}
-
-/**
- * Merge a modular device's startup-parameter rows: the device's own CoE
- * dictionary rows (base, module-independent) followed by the module-derived
- * rows.  For the same object entry the later (module) row wins -- exactly the
- * write order the original runtime relied on (`[...dictionary, ...module]`),
- * just collapsed into a single duplicate-free list for storage/display.
+ * Merge a modular device's startup-parameter rows for display/export: the
+ * device's own CoE dictionary rows (kept in full -- nothing is hidden) plus
+ * the module-derived rows.  For the same object entry the later (module) row
+ * wins; module-only entries (not in the dictionary) are appended.  The result
+ * is sorted by object index then subindex so the list stays stable and easy to
+ * scan as modules are (de)selected.
  */
 export function mergeModuleSdoRows(
-  base: SDOConfigurationEntry[] | undefined,
+  dictRows: SDOConfigurationEntry[] | undefined,
   moduleRows: SDOConfigurationEntry[],
 ): SDOConfigurationEntry[] {
   const merged: SDOConfigurationEntry[] = []
   const indexByKey = new Map<string, number>()
-  for (const entry of [...(base ?? []), ...moduleRows]) {
+  for (const entry of [...(dictRows ?? []), ...moduleRows]) {
     const key = `${entry.index}|${entry.subIndex}`
     const existing = indexByKey.get(key)
     if (existing !== undefined) {
@@ -255,7 +206,7 @@ export function mergeModuleSdoRows(
       merged.push(entry)
     }
   }
-  return merged
+  return merged.sort((a, b) => hexIndexToInt(a.index) - hexIndexToInt(b.index) || a.subIndex - b.subIndex)
 }
 
 /** Parse a hex object index ("0x1690" / "#x1690") to an integer. */
@@ -498,16 +449,18 @@ export function buildModuleEnrich(
     iecType: esiTypeToIecType(ch.dataType, ch.bitLen),
   }))
 
-  // Startup parameters = the device's own CoE dictionary rows (base, kept
-  // verbatim for every object -- global and per-port alike, exactly as the
-  // original export) overlaid with the module-derived rows for the populated
-  // slots (operator overrides preserved by the reconciler).  The merged list
-  // is the single source the UI shows and the runtime receives; for a given
-  // object entry the module value wins, matching the original write order
-  // `[...dictionary, ...module]`.
+  // Startup parameters: the Startup Parameters list is the device's full CoE
+  // dictionary rows -- always present, never hidden -- overlaid with the
+  // module-derived rows for the populated slots.  Where the module InitCmd
+  // touches an entry the dictionary already lists, the module's value wins;
+  // InitCmd entries the dictionary does not enumerate (e.g. the port-config
+  // Set-* commands) are appended so the InitCmd's modifications are visible in
+  // the list.  The merged list is what the UI shows and the runtime receives;
+  // it is sorted by object index/subindex so it stays stable and findable as
+  // modules are (de)selected.
   const previous = previousSdoConfigurations ?? []
-  const baseRows = previous.filter((entry) => !entry.moduleSlot)
-  const moduleRows = reconcileModuleSdoConfigurations(previous, buildModuleSdoConfigurations(device, selections))
+  const dictRows = previous.filter((entry) => !entry.moduleSlot)
+  const moduleRows = buildModuleSdoConfigurations(device, selections)
 
   return {
     channelInfo,
@@ -520,13 +473,10 @@ export function buildModuleEnrich(
     rxPdos: persistPdos(image.rxPdo.filter((pdo) => !pdo.fixed)),
     txPdos: persistPdos(image.txPdo.filter((pdo) => !pdo.fixed)),
     slaveType: deriveSlaveType({ rxPdo: image.rxPdo, txPdo: image.txPdo }),
-    sdoConfigurations: mergeModuleSdoRows(baseRows, moduleRows),
+    sdoConfigurations: mergeModuleSdoRows(dictRows, moduleRows),
     channelMappings: generateDefaultChannelMappings(channels, usedAddresses),
     moduleSlots: isModularDevice(device) ? buildModuleCatalog(device) : undefined,
     moduleSelections: isModularDevice(device) ? selections : undefined,
-    // Legacy field retired for module support: startup parameters for a
-    // modular device now live in `sdoConfigurations`.  Undefined here clears
-    // the stale persisted value.
     moduleSdoConfigurations: undefined,
   }
 }

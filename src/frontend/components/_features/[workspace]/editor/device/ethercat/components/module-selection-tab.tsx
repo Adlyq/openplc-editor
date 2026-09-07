@@ -130,12 +130,12 @@ const ModuleSelectionTab = ({ device, externalAddresses, onEnrich }: ModuleSelec
         txPdos: enriched.txPdos,
         slaveType: enriched.slaveType,
         channelMappings,
-        // Module-derived startup parameters are the single source for a
-        // modular slave.  Overrides for rows that survive (same module/slot)
-        // are preserved by buildModuleEnrich; rows of a replaced module reset
-        // to the new module's defaults.
+        // The parameter list (`sdoConfigurations`) is the device's full CoE
+        // dictionary overlaid with the module rows for the populated slots, so
+        // the module InitCmd values show up in the list.  The legacy
+        // `moduleSdoConfigurations` field is cleared (single source now).
         sdoConfigurations: enriched.sdoConfigurations,
-        moduleSdoConfigurations: undefined,
+        moduleSdoConfigurations: enriched.moduleSdoConfigurations,
         moduleSlots: enriched.moduleSlots,
         moduleSelections: enriched.moduleSelections,
       })

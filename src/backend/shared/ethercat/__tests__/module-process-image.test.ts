@@ -18,7 +18,6 @@ import {
   mergeModuleSdoRows,
   moduleInitCmdToSdoEntry,
   NO_SLAVE_MODULE_IDENT,
-  reconcileModuleSdoConfigurations,
 } from '../module-process-image'
 
 const ESI_XML = readFileSync(resolve(__dirname, 'fixtures/modular-iologlink-esi.xml'), 'utf-8')
@@ -138,113 +137,7 @@ describe('moduleInitCmdToSdoEntry / buildModuleSdoConfigurations', () => {
   })
 })
 
-describe('reconcileModuleSdoConfigurations', () => {
-  const row = (over: Partial<SDOConfigurationEntry> = {}): SDOConfigurationEntry => ({
-    index: '0x2002',
-    subIndex: 1,
-    value: '222',
-    defaultValue: '222',
-    dataType: 'UINT16',
-    bitLength: 16,
-    name: 'Index',
-    objectName: 'ISDU',
-    ...over,
-  })
-
-  it('keeps an override when the same module stays in the same slot', () => {
-    const prev = [row({ value: '300', defaultValue: '222', moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
-    const next = [row({ moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
-    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('300')
-  })
-
-  it('resets to the new module defaults when the module of a slot changes', () => {
-    const prev = [row({ value: '300', defaultValue: '222', moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
-    const next = [row({ moduleSlot: 'Port1', moduleIdent: '0x2c11' })]
-    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('222')
-  })
-
-  it('drops overrides for rows that no longer exist', () => {
-    const prev = [row({ value: '300', defaultValue: '222', moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
-    const next = [row({ moduleSlot: 'Port2', moduleIdent: '0x2c01', index: '0x2012' })]
-    expect(reconcileModuleSdoConfigurations(prev, next)).toHaveLength(1)
-    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('222')
-  })
-
-  it('preserves a legacy (un-tagged) override onto the module row by index', () => {
-    const prev = [row({ value: '300', defaultValue: '222' })] // no module metadata
-    const next = [row({ moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
-    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('300')
-  })
-
-  it('keeps a power-row override by subindex across module changes', () => {
-    const prev = [
-      {
-        index: '0x3000',
-        subIndex: 2,
-        value: '0',
-        defaultValue: '2',
-        dataType: 'UINT16',
-        bitLength: 16,
-        name: 'Class A Power Control',
-        objectName: 'Class A Power Control',
-      },
-    ]
-    const next = [
-      {
-        index: '0x3000',
-        subIndex: 2,
-        value: '2',
-        defaultValue: '2',
-        dataType: 'UINT16',
-        bitLength: 16,
-        name: 'Class A Power Control',
-        objectName: 'Class A Power Control',
-      },
-    ]
-    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('0')
-  })
-
-  it('returns next unchanged when there are no overrides to preserve', () => {
-    const next = [row({ moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
-    expect(reconcileModuleSdoConfigurations(undefined, next)).toBe(next)
-    expect(reconcileModuleSdoConfigurations([], next)).toBe(next)
-    expect(reconcileModuleSdoConfigurations([row({ value: '222', defaultValue: '222' })], next)).toEqual(next)
-  })
-})
-
-describe('mergeModuleSdoRows', () => {
-  const base = (index: string, value = '0'): SDOConfigurationEntry => ({
-    index,
-    subIndex: 1,
-    value,
-    defaultValue: '0',
-    dataType: 'UINT8',
-    bitLength: 8,
-    name: 'p',
-    objectName: 'parent',
-  })
-
-  it('keeps base rows and lets a later module row override the same entry', () => {
-    const merged = mergeModuleSdoRows(
-      [base('0x2000'), base('0x8000', '0')],
-      [{ ...base('0x8000', '2'), moduleSlot: 'Port1', moduleIdent: '0x2c01' }],
-    )
-    expect(merged.map((e) => `${e.index}:${e.subIndex}=${e.value}`)).toEqual(['0x2000:1=0', '0x8000:1=2'])
-  })
-
-  it('collapses duplicates to a single row (later wins)', () => {
-    const merged = mergeModuleSdoRows(undefined, [base('0x8000', '2'), { ...base('0x8000', '3'), moduleSlot: 'P1' }])
-    expect(merged).toHaveLength(1)
-    expect(merged[0].value).toBe('3')
-  })
-
-  it('handles a missing base list', () => {
-    expect(mergeModuleSdoRows(undefined, [base('0x3000')])).toHaveLength(1)
-    expect(mergeModuleSdoRows([], [])).toEqual([])
-  })
-})
-
-describe('buildModuleEnrich startup parameters (dictionary base + module overlay)', () => {
+describe('buildModuleEnrich startup parameters (dictionary overlaid with module rows)', () => {
   const device = parseDevice()
   const dictRow = (index: string, subIndex = 1): SDOConfigurationEntry => ({
     index,
@@ -258,29 +151,62 @@ describe('buildModuleEnrich startup parameters (dictionary base + module overlay
   })
   const selections = device.slots!.map((s) => ({ slotName: s.name, moduleIdent: '0x2c01' }))
 
-  it('keeps dictionary base rows and overlays module rows for populated slots', () => {
+  it('keeps the full dictionary rows and overlays module rows for populated slots', () => {
     const enriched = buildModuleEnrich(device, selections, undefined, [dictRow('0x2000'), dictRow('0x8000', 99)])
+    // Dictionary rows are always present (nothing hidden)...
+    const keys = enriched.sdoConfigurations.map((e) => `${e.index}:${e.subIndex}`)
+    expect(keys).toContain('0x2000:1')
+    expect(keys).toContain('0x8000:99')
+    // ...and module InitCmd rows are merged in so their values are visible.
     const moduleRows = enriched.sdoConfigurations.filter((e) => e.moduleSlot)
-    const baseRows = enriched.sdoConfigurations.filter((e) => !e.moduleSlot)
-    expect(baseRows.map((e) => `${e.index}:${e.subIndex}`)).toEqual(['0x2000:1', '0x8000:99'])
     expect(moduleRows.length).toBeGreaterThan(0)
     expect(moduleRows.every((e) => e.moduleIdent === '0x2c01')).toBe(true)
+    // Single source: the legacy moduleSdoConfigurations field is cleared.
+    expect(enriched.moduleSdoConfigurations).toBeUndefined()
   })
 
-  it('module rows override dictionary rows sharing the same object entry', () => {
+  it('module rows win over dictionary rows sharing the same object entry', () => {
     const enriched = buildModuleEnrich(device, selections, undefined, [dictRow('0x8000', 0x24)])
     const entry = enriched.sdoConfigurations.find((e) => e.index === '0x8000' && e.subIndex === 0x24)
     expect(entry?.moduleSlot).toBeTruthy()
-    // Only one row per (index, subIndex).
     const keys = enriched.sdoConfigurations.map((e) => `${e.index}:${e.subIndex}`)
     expect(new Set(keys).size).toBe(keys.length)
   })
+})
 
-  it('clears the legacy moduleSdoConfigurations field', () => {
-    const enriched = buildModuleEnrich(device, selections)
-    expect(enriched.sdoConfigurations.length).toBeGreaterThan(0)
-    expect('moduleSdoConfigurations' in enriched).toBe(true)
-    expect(enriched.moduleSdoConfigurations).toBeUndefined()
+describe('mergeModuleSdoRows', () => {
+  const base = (index: string, value = '0', subIndex = 1): SDOConfigurationEntry => ({
+    index,
+    subIndex,
+    value,
+    defaultValue: '0',
+    dataType: 'UINT8',
+    bitLength: 8,
+    name: 'p',
+    objectName: 'parent',
+  })
+
+  it('keeps dictionary rows and lets a later module row override the same entry', () => {
+    const merged = mergeModuleSdoRows(
+      [base('0x2000'), base('0x8000', '0')],
+      [{ ...base('0x8000', '2', 1), moduleSlot: 'Port1', moduleIdent: '0x2c01' }],
+    )
+    expect(merged.map((e) => `${e.index}:${e.subIndex}=${e.value}`)).toEqual(['0x2000:1=0', '0x8000:1=2'])
+  })
+
+  it('sorts rows by object index then subindex', () => {
+    const merged = mergeModuleSdoRows(undefined, [
+      { ...base('0x8000', '3', 40), moduleSlot: 'P1' },
+      { ...base('0x3000', '2', 2), moduleSlot: 'P1' },
+      { ...base('0x2002', '1', 1), moduleSlot: 'P1' },
+      { ...base('0x8000', '2', 36), moduleSlot: 'P1' },
+    ])
+    expect(merged.map((e) => `${e.index}:${e.subIndex}`)).toEqual(['0x2002:1', '0x3000:2', '0x8000:36', '0x8000:40'])
+  })
+
+  it('handles a missing dictionary list', () => {
+    expect(mergeModuleSdoRows(undefined, [base('0x3000')])).toHaveLength(1)
+    expect(mergeModuleSdoRows([], [])).toEqual([])
   })
 })
 
