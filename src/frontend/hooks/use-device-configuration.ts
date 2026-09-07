@@ -4,7 +4,13 @@ import {
   pdoToChannels,
   persistedPdosToChannels,
 } from '@root/backend/shared/ethercat/esi-parser'
-import { buildModuleCatalog, defaultModuleSelections } from '@root/backend/shared/ethercat/module-process-image'
+import {
+  buildModuleCatalog,
+  buildModuleSdoConfigurations,
+  defaultModuleSelections,
+  mergeModuleSdoRows,
+  reconcileModuleSdoConfigurations,
+} from '@root/backend/shared/ethercat/module-process-image'
 import { extractDefaultSdoConfigurations } from '@root/backend/shared/ethercat/sdo-config-defaults'
 import { toast } from '@root/frontend/components/_features/[app]/toast/use-toast'
 import { useOpenPLCStore } from '@root/frontend/store'
@@ -114,6 +120,39 @@ export function useDeviceConfiguration({
             })
           }
 
+          // Legacy migration: a modular slave persisted before module-driven
+          // startup parameters kept only the raw device CoE dictionary dump in
+          // `sdoConfigurations` and derived the per-port activation values into
+          // `moduleSdoConfigurations`.  Keep the dictionary rows verbatim and
+          // overlay module-derived rows (same-module overrides preserved) so
+          // the runtime receives the identical startup SDO set as before.
+          if ((result.device.slots?.length ?? 0) > 0 && device.moduleSlots && device.moduleSelections) {
+            const stored = device.sdoConfigurations
+            if (stored && stored.length > 0 && !stored.some((entry) => entry.moduleSlot)) {
+              const rows = buildModuleSdoConfigurations(result.device, device.moduleSelections)
+              onEnrichDeviceRef.current({
+                sdoConfigurations: mergeModuleSdoRows(stored, reconcileModuleSdoConfigurations(stored, rows)),
+                moduleSdoConfigurations: undefined,
+              })
+            }
+          }
+
+          // Legacy cleanup: the module process-image exporter once shipped the
+          // coupler's fixed PDOs (0x1680 / 0x1A80 / 0x1A81) in rxPdos/txPdos.
+          // The runtime adds them to the assignment itself and re-bases the
+          // module channel offsets, so keep the persisted PDO list module-only
+          // (matching the module-only channel list) or the runtime mis-computes
+          // the input channel offset.
+          if (
+            (result.device.slots?.length ?? 0) > 0 &&
+            (device.rxPdos?.some((p) => p.fixed) || device.txPdos?.some((p) => p.fixed))
+          ) {
+            onEnrichDeviceRef.current({
+              rxPdos: (device.rxPdos ?? []).filter((p) => !p.fixed),
+              txPdos: (device.txPdos ?? []).filter((p) => !p.fixed),
+            })
+          }
+
           if (device.channelMappings.length === 0 && storedChannels.length > 0) {
             onUpdateChannelMappingsRef.current(generateDefaultChannelMappings(storedChannels, externalAddresses))
           }
@@ -121,7 +160,14 @@ export function useDeviceConfiguration({
           if (!device.channelInfo || !device.rxPdos || !device.txPdos) {
             const { sdoConfigurations, ...rest } = enrichDeviceData(result.device, externalAddresses)
             onEnrichDeviceRef.current(device.sdoConfigurations !== undefined ? rest : { ...rest, sdoConfigurations })
-          } else if (device.sdoConfigurations === undefined && result.device.coeObjects?.length) {
+            // Modular slaves must never fall through to the dictionary-based
+            // startup-parameter seeding below: their per-port objects are
+            // module-owned and generated from the module selections.
+          } else if (
+            device.sdoConfigurations === undefined &&
+            (result.device.slots?.length ?? 0) === 0 &&
+            result.device.coeObjects?.length
+          ) {
             onEnrichDeviceRef.current({
               channelInfo: device.channelInfo,
               rxPdos: device.rxPdos,

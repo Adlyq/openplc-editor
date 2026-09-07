@@ -96,7 +96,7 @@ const ModuleSelectionTab = ({ device, externalAddresses, onEnrich }: ModuleSelec
 
       // Surface what changing the process image costs before applying it.
       const oldAliasByChannel = new Map(device.channelMappings.map((m) => [m.channelId, m.alias]))
-      const enriched = buildModuleEnrich(fullDevice, nextSelections, externalAddresses)
+      const enriched = buildModuleEnrich(fullDevice, nextSelections, externalAddresses, device.sdoConfigurations)
       const newChannelIds = new Set(enriched.channelInfo.map((c) => c.channelId))
       const droppedAliases = [...oldAliasByChannel.entries()].filter(
         ([channelId, alias]) => alias && !newChannelIds.has(channelId),
@@ -130,12 +130,17 @@ const ModuleSelectionTab = ({ device, externalAddresses, onEnrich }: ModuleSelec
         txPdos: enriched.txPdos,
         slaveType: enriched.slaveType,
         channelMappings,
+        // Module-derived startup parameters are the single source for a
+        // modular slave.  Overrides for rows that survive (same module/slot)
+        // are preserved by buildModuleEnrich; rows of a replaced module reset
+        // to the new module's defaults.
+        sdoConfigurations: enriched.sdoConfigurations,
+        moduleSdoConfigurations: undefined,
         moduleSlots: enriched.moduleSlots,
         moduleSelections: enriched.moduleSelections,
-        moduleSdoConfigurations: enriched.moduleSdoConfigurations,
       })
     },
-    [selections, slots, fullDevice, device.channelMappings, externalAddresses, onEnrich],
+    [selections, slots, fullDevice, device.channelMappings, device.sdoConfigurations, externalAddresses, onEnrich],
   )
 
   if (isLoading) {

@@ -79,6 +79,9 @@ export function pdoToChannels(device: Pick<ESIDevice, 'rxPdo' | 'txPdo'>): ESICh
 
   // Process TxPDOs (inputs - slave to master)
   for (const pdo of device.txPdo) {
+    // Fixed PDOs (a coupler's own PDI/CQ status objects) stay in the process
+    // image for mapping but are not exposed as PLC channels.
+    if (pdo.fixed) continue
     for (const entry of pdo.entries) {
       // Skip padding entries for channel list
       if (entry.name === 'Padding' && entry.index === '0x0000') {
@@ -108,6 +111,7 @@ export function pdoToChannels(device: Pick<ESIDevice, 'rxPdo' | 'txPdo'>): ESICh
 
   // Process RxPDOs (outputs - master to slave)
   for (const pdo of device.rxPdo) {
+    if (pdo.fixed) continue
     for (const entry of pdo.entries) {
       // Skip padding entries for channel list
       if (entry.name === 'Padding' && entry.index === '0x0000') {
@@ -327,6 +331,7 @@ export function persistPdos(pdos: ESIPdo[]): PersistedPdo[] {
   return pdos.map((pdo) => ({
     index: pdo.index,
     name: pdo.name,
+    fixed: pdo.fixed,
     entries: pdo.entries.map(
       (entry): PersistedPdoEntry => ({
         index: entry.index,
@@ -389,7 +394,7 @@ export function persistedPdosToChannels(
     pdos.map((pdo) => ({
       index: pdo.index,
       name: pdo.name,
-      fixed: false,
+      fixed: pdo.fixed ?? false,
       mandatory: false,
       entries: pdo.entries.map((entry) => ({
         index: entry.index,

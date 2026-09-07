@@ -41,6 +41,10 @@ interface RuntimeSdoConfig {
   bit_length: number
   name: string
   comment: string
+  /** Module/port activation: the runtime must (re)apply this once the bus is
+   *  OPERATIONAL (the gateway clears it on every mapping regeneration).
+   *  Present only on entries derived from module CoE InitCmds. */
+  apply_after_operational?: boolean
 }
 
 interface RuntimeSlaveConfig {
@@ -227,6 +231,7 @@ function buildSdoConfigurations(entries: SDOConfigurationEntry[] | undefined): R
         bit_length: entry.bitLength,
         name: entry.name,
         comment: `Startup SDO: ${entry.objectName}`,
+        ...(entry.applyAfterOperational ? { apply_after_operational: true } : {}),
       }),
     )
 }
@@ -239,9 +244,39 @@ function buildSlave(device: ConfiguredEtherCATDevice, index: number): RuntimeSla
   const channels = device.channelInfo ? buildChannels(device.channelInfo, device.channelMappings) : []
   const rxPdos = device.rxPdos ? convertPdos(device.rxPdos) : []
   const txPdos = device.txPdos ? convertPdos(device.txPdos) : []
-  // Module activation SDOs are appended AFTER the device-level startup SDOs
-  // (whose exported values default to zero) so the activation values win.
-  const sdoConfigurations = [...(device.sdoConfigurations ?? []), ...(device.moduleSdoConfigurations ?? [])]
+  // Startup SDO sources:
+  //  - Flat devices: `sdoConfigurations` (extracted from the CoE dictionary).
+  //  - Modular devices (current): `sdoConfigurations` already holds the
+  //    module-derived rows (per populated slot) -- the single source.
+  //  - Modular devices persisted before that model: `sdoConfigurations` may
+  //    still be the raw dictionary dump while `moduleSdoConfigurations` holds
+  //    the derived activation rows; merge + dedupe (later wins) reproduces the
+  //    old "module rows override the dictionary zeros" semantics.
+  const isModular = (device.moduleSlots?.length ?? 0) > 0
+  const rowsHaveModuleSource = (device.sdoConfigurations ?? []).some(
+    (entry) => entry.moduleSlot !== undefined || entry.applyAfterOperational === true,
+  )
+  let sdoConfigurations: SDOConfigurationEntry[]
+  if (isModular && !rowsHaveModuleSource) {
+    // Legacy merge: later entries (module-derived) override earlier
+    // dictionary rows for the same object; duplicates collapse to one row.
+    const combined = [...(device.sdoConfigurations ?? []), ...(device.moduleSdoConfigurations ?? [])]
+    const unique: SDOConfigurationEntry[] = []
+    const indexByKey = new Map<string, number>()
+    for (const entry of combined) {
+      const key = `${entry.index}|${entry.subIndex}`
+      const existing = indexByKey.get(key)
+      if (existing !== undefined) {
+        unique[existing] = entry
+      } else {
+        indexByKey.set(key, unique.length)
+        unique.push(entry)
+      }
+    }
+    sdoConfigurations = unique
+  } else {
+    sdoConfigurations = device.sdoConfigurations ?? []
+  }
 
   const cfg = device.config
 

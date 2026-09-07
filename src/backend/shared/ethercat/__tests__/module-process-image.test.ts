@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
+import type { SDOConfigurationEntry } from '@root/middleware/shared/ports/esi-types'
 import { parseESIDeviceFull } from '../esi-parser-main'
 import { enrichDeviceData } from '../enrich-device-data'
 import { persistedPdosToChannels } from '../esi-parser'
@@ -14,8 +15,10 @@ import {
   isModularDevice,
   isModuleSelectionComplete,
   listUnconfiguredModuleDevices,
+  mergeModuleSdoRows,
   moduleInitCmdToSdoEntry,
   NO_SLAVE_MODULE_IDENT,
+  reconcileModuleSdoConfigurations,
 } from '../module-process-image'
 
 const ESI_XML = readFileSync(resolve(__dirname, 'fixtures/modular-iologlink-esi.xml'), 'utf-8')
@@ -73,36 +76,211 @@ describe('moduleInitCmdToSdoEntry / buildModuleSdoConfigurations', () => {
       value: '2',
       dataType: 'UINT32',
       bitLength: 32,
+      applyAfterOperational: true,
     })
   })
 
-  it('offsets the object index per slot and drops non-scalar blobs', () => {
+  it('offsets the object index per slot', () => {
     const entry = moduleInitCmdToSdoEntry(
       { index: '0x8000', subIndex: '0x24', data: '0200', comment: 'PD In Length' },
       1,
       16,
     )
     expect(entry?.index).toBe('0x8010')
+    expect(entry?.applyAfterOperational).toBe(true)
+  })
+
+  it('drops non-scalar blobs (wider than 4 bytes)', () => {
+    // The 8-byte ISDU data buffer is not representable as a scalar startup
+    // SDO, so it is dropped (matching the original runtime's write model).
     expect(
-      moduleInitCmdToSdoEntry({ index: '0x2002', subIndex: '0x04', data: '0000000000000000', comment: '' }, 0, 16),
+      moduleInitCmdToSdoEntry(
+        { index: '0x2002', subIndex: '0x04', data: '0000000000000000', comment: 'ISDU Data' },
+        0,
+        16,
+      ),
+    ).toBeNull()
+    expect(
+      moduleInitCmdToSdoEntry(
+        { index: '0x2002', subIndex: '0x04', data: '00000000000000000000000000000000', comment: '' },
+        0,
+        16,
+      ),
     ).toBeNull()
   })
 
-  it('collects activation SDOs (incl. Class-A power) for the selected modules', () => {
+  it('collects module rows (with metadata) plus one Class-A power per port', () => {
     const selections = device.slots!.map((s) => ({ slotName: s.name, moduleIdent: '0x2c01' }))
     const sdos = buildModuleSdoConfigurations(device, selections)
-    expect(sdos).toHaveLength(6) // (2 scalar InitCmds + 1 power) x 2 slots
-    expect(sdos[1]).toMatchObject({ index: '0x8000', subIndex: 0x25, dataType: 'UINT32' })
-    expect(sdos[2]).toMatchObject({ index: '0x3000', subIndex: 1, value: '2' })
-    expect(sdos[3]).toMatchObject({ index: '0x8010', subIndex: 0x24 })
-    expect(sdos[4]).toMatchObject({ index: '0x8010', subIndex: 0x25 })
-    expect(sdos[5]).toMatchObject({ index: '0x3000', subIndex: 1 })
+    // Per slot: PD in + PD out = 2 scalar rows; x2 slots + a single Class-A
+    // power row for the port the two fixture slots share.
+    expect(sdos).toHaveLength(5)
+    // Every row is tagged so overrides can be preserved across reselects.
+    expect(sdos.every((s) => s.moduleSlot && s.moduleIdent === '0x2c01')).toBe(true)
+    // The port power row appears once and is flagged for post-OP replay.
+    const powerRows = sdos.filter((s) => s.index === '0x3000')
+    expect(powerRows).toHaveLength(1)
+    expect(powerRows[0]).toMatchObject({ subIndex: 1, value: '2', applyAfterOperational: true })
+    // PD length rows are flagged for post-OP replay (slot 1 indexes offset by
+    // the SlotIndexIncrement); nothing else is flagged.
+    expect(
+      sdos
+        .filter((s) => s.applyAfterOperational)
+        .map((s) => s.index)
+        .sort(),
+    ).toEqual(['0x3000', '0x8000', '0x8000', '0x8010', '0x8010'])
   })
 
-  it('yields no activation SDOs for NO-Slave / empty selections', () => {
+  it('yields no rows for NO-Slave / empty selections', () => {
     expect(buildModuleSdoConfigurations(device, [])).toEqual([])
     const noSlave = device.slots!.map((s) => ({ slotName: s.name, moduleIdent: NO_SLAVE_MODULE_IDENT }))
     expect(buildModuleSdoConfigurations(device, noSlave)).toEqual([])
+  })
+})
+
+describe('reconcileModuleSdoConfigurations', () => {
+  const row = (over: Partial<SDOConfigurationEntry> = {}): SDOConfigurationEntry => ({
+    index: '0x2002',
+    subIndex: 1,
+    value: '222',
+    defaultValue: '222',
+    dataType: 'UINT16',
+    bitLength: 16,
+    name: 'Index',
+    objectName: 'ISDU',
+    ...over,
+  })
+
+  it('keeps an override when the same module stays in the same slot', () => {
+    const prev = [row({ value: '300', defaultValue: '222', moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
+    const next = [row({ moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
+    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('300')
+  })
+
+  it('resets to the new module defaults when the module of a slot changes', () => {
+    const prev = [row({ value: '300', defaultValue: '222', moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
+    const next = [row({ moduleSlot: 'Port1', moduleIdent: '0x2c11' })]
+    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('222')
+  })
+
+  it('drops overrides for rows that no longer exist', () => {
+    const prev = [row({ value: '300', defaultValue: '222', moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
+    const next = [row({ moduleSlot: 'Port2', moduleIdent: '0x2c01', index: '0x2012' })]
+    expect(reconcileModuleSdoConfigurations(prev, next)).toHaveLength(1)
+    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('222')
+  })
+
+  it('preserves a legacy (un-tagged) override onto the module row by index', () => {
+    const prev = [row({ value: '300', defaultValue: '222' })] // no module metadata
+    const next = [row({ moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
+    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('300')
+  })
+
+  it('keeps a power-row override by subindex across module changes', () => {
+    const prev = [
+      {
+        index: '0x3000',
+        subIndex: 2,
+        value: '0',
+        defaultValue: '2',
+        dataType: 'UINT16',
+        bitLength: 16,
+        name: 'Class A Power Control',
+        objectName: 'Class A Power Control',
+      },
+    ]
+    const next = [
+      {
+        index: '0x3000',
+        subIndex: 2,
+        value: '2',
+        defaultValue: '2',
+        dataType: 'UINT16',
+        bitLength: 16,
+        name: 'Class A Power Control',
+        objectName: 'Class A Power Control',
+      },
+    ]
+    expect(reconcileModuleSdoConfigurations(prev, next)[0].value).toBe('0')
+  })
+
+  it('returns next unchanged when there are no overrides to preserve', () => {
+    const next = [row({ moduleSlot: 'Port1', moduleIdent: '0x2c01' })]
+    expect(reconcileModuleSdoConfigurations(undefined, next)).toBe(next)
+    expect(reconcileModuleSdoConfigurations([], next)).toBe(next)
+    expect(reconcileModuleSdoConfigurations([row({ value: '222', defaultValue: '222' })], next)).toEqual(next)
+  })
+})
+
+describe('mergeModuleSdoRows', () => {
+  const base = (index: string, value = '0'): SDOConfigurationEntry => ({
+    index,
+    subIndex: 1,
+    value,
+    defaultValue: '0',
+    dataType: 'UINT8',
+    bitLength: 8,
+    name: 'p',
+    objectName: 'parent',
+  })
+
+  it('keeps base rows and lets a later module row override the same entry', () => {
+    const merged = mergeModuleSdoRows(
+      [base('0x2000'), base('0x8000', '0')],
+      [{ ...base('0x8000', '2'), moduleSlot: 'Port1', moduleIdent: '0x2c01' }],
+    )
+    expect(merged.map((e) => `${e.index}:${e.subIndex}=${e.value}`)).toEqual(['0x2000:1=0', '0x8000:1=2'])
+  })
+
+  it('collapses duplicates to a single row (later wins)', () => {
+    const merged = mergeModuleSdoRows(undefined, [base('0x8000', '2'), { ...base('0x8000', '3'), moduleSlot: 'P1' }])
+    expect(merged).toHaveLength(1)
+    expect(merged[0].value).toBe('3')
+  })
+
+  it('handles a missing base list', () => {
+    expect(mergeModuleSdoRows(undefined, [base('0x3000')])).toHaveLength(1)
+    expect(mergeModuleSdoRows([], [])).toEqual([])
+  })
+})
+
+describe('buildModuleEnrich startup parameters (dictionary base + module overlay)', () => {
+  const device = parseDevice()
+  const dictRow = (index: string, subIndex = 1): SDOConfigurationEntry => ({
+    index,
+    subIndex,
+    value: '5',
+    defaultValue: '5',
+    dataType: 'UINT8',
+    bitLength: 8,
+    name: 'param',
+    objectName: 'EherCAT OffLine Config',
+  })
+  const selections = device.slots!.map((s) => ({ slotName: s.name, moduleIdent: '0x2c01' }))
+
+  it('keeps dictionary base rows and overlays module rows for populated slots', () => {
+    const enriched = buildModuleEnrich(device, selections, undefined, [dictRow('0x2000'), dictRow('0x8000', 99)])
+    const moduleRows = enriched.sdoConfigurations.filter((e) => e.moduleSlot)
+    const baseRows = enriched.sdoConfigurations.filter((e) => !e.moduleSlot)
+    expect(baseRows.map((e) => `${e.index}:${e.subIndex}`)).toEqual(['0x2000:1', '0x8000:99'])
+    expect(moduleRows.length).toBeGreaterThan(0)
+    expect(moduleRows.every((e) => e.moduleIdent === '0x2c01')).toBe(true)
+  })
+
+  it('module rows override dictionary rows sharing the same object entry', () => {
+    const enriched = buildModuleEnrich(device, selections, undefined, [dictRow('0x8000', 0x24)])
+    const entry = enriched.sdoConfigurations.find((e) => e.index === '0x8000' && e.subIndex === 0x24)
+    expect(entry?.moduleSlot).toBeTruthy()
+    // Only one row per (index, subIndex).
+    const keys = enriched.sdoConfigurations.map((e) => `${e.index}:${e.subIndex}`)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('clears the legacy moduleSdoConfigurations field', () => {
+    const enriched = buildModuleEnrich(device, selections)
+    expect(enriched.sdoConfigurations.length).toBeGreaterThan(0)
+    expect('moduleSdoConfigurations' in enriched).toBe(true)
+    expect(enriched.moduleSdoConfigurations).toBeUndefined()
   })
 })
 
@@ -252,6 +430,24 @@ describe('persistedPdosToChannels', () => {
     expect(rebuilt.map((c) => c.iecType)).toEqual(enriched.channelInfo.map((c) => c.iecType))
     expect(rebuilt.map((c) => c.direction)).toEqual(enriched.channelInfo.map((c) => c.direction))
   })
+
+  it('excludes fixed coupler PDOs from the channel list', () => {
+    const fixedTx = {
+      index: '0x1a80',
+      name: 'CQ status',
+      fixed: true,
+      entries: [{ index: '0xb080', subIndex: '0x01', bitLen: 1, name: 'CQ Bit', dataType: 'BOOL' }],
+    }
+    const moduleTx = {
+      index: '0x1a90',
+      name: 'PD In',
+      fixed: false,
+      entries: [{ index: '0x6000', subIndex: '0x01', bitLen: 16, name: 'Input', dataType: 'UINT' }],
+    }
+    const channels = persistedPdosToChannels([], [fixedTx, moduleTx])
+    expect(channels).toHaveLength(1)
+    expect(channels[0].pdoIndex).toBe('0x1a90')
+  })
 })
 
 describe('defaultModuleSelections', () => {
@@ -301,6 +497,30 @@ describe('buildModuleEnrich', () => {
     expect(enriched.moduleSlots).toHaveLength(2)
     expect(enriched.moduleSelections).toEqual(selections)
     expect(enriched.slaveType).toBe('analog_io')
+  })
+
+  it('excludes the coupler fixed PDOs from the exported rxPdos/txPdos', () => {
+    const fixedRx = {
+      index: '0x1680',
+      name: 'Coupler Out',
+      fixed: true,
+      mandatory: true,
+      entries: [{ index: '0xa080', subIndex: '0x02', bitLen: 1, name: 'CQ', dataType: 'BOOL' }],
+    }
+    const fixedTx = {
+      index: '0x1a80',
+      name: 'CQ status',
+      fixed: true,
+      mandatory: true,
+      entries: [{ index: '0xb080', subIndex: '0x01', bitLen: 1, name: 'CQ Bit', dataType: 'BOOL' }],
+    }
+    const dev = { ...device, rxPdo: [fixedRx], txPdo: [fixedTx] }
+    const enriched = buildModuleEnrich(dev, selections)
+    expect(enriched.rxPdos.map((p) => p.index)).not.toContain('0x1680')
+    expect(enriched.txPdos.map((p) => p.index)).not.toContain('0x1a80')
+    // Module process-data PDOs still ship to the runtime.
+    expect(enriched.rxPdos.length).toBeGreaterThan(0)
+    expect(enriched.txPdos.length).toBeGreaterThan(0)
   })
 
   it('yields an empty image for no selections', () => {

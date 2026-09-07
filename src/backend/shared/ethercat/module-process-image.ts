@@ -14,6 +14,7 @@
  */
 
 import type {
+  ESICoEObject,
   ESIDevice,
   ESIPdo,
   ESIPdoEntry,
@@ -40,7 +41,9 @@ export const NO_SLAVE_MODULE_IDENT = '0x0000'
 const UINT_TYPE_BY_BYTES: Record<number, string> = { 1: 'UINT8', 2: 'UINT16', 4: 'UINT32' }
 
 /**
- * Parse a little-endian hex byte string into a number.
+ * Parse a little-endian hex byte string into a number.  Only scalar widths up
+ * to 4 bytes are representable as a startup SDO, so the value always fits in a
+ * JS number; the result is carried as a string for the SDO entry.
  */
 function littleEndianHexToInt(data: string): number {
   let value = 0
@@ -56,10 +59,12 @@ function littleEndianHexToInt(data: string): number {
  *
  * The InitCmd object index is a DependOnSlot base value; the effective index
  * is `base + slotOffset * SlotIndexIncrement`.  Data bytes are little-endian
- * and only scalar widths (1/2/4 bytes) are representable as a startup SDO --
- * wider blobs (e.g. the 8-byte ISDU data buffer, always zeros) are dropped.
+ * and only scalar widths 1/2/4 bytes are representable as a startup SDO; wider
+ * blobs (e.g. the 8-byte ISDU data buffer) are dropped, matching the original
+ * runtime's scalar SDO write model.
  *
- * @returns The SDO entry, or null when the command cannot be represented.
+ * @returns The SDO entry (no module metadata), or null when the command cannot
+ *          be represented.  Callers add moduleSlot/moduleIdent per row.
  */
 export function moduleInitCmdToSdoEntry(
   cmd: { index: string; subIndex: string; data: string; comment: string },
@@ -75,7 +80,8 @@ export function moduleInitCmdToSdoEntry(
   // how many bytes the ESI InitCmd happened to encode.  Emit them as UINT32
   // (little-endian value preserved) to mirror what ec_op/ec_ioport write.
   const isPortConfig =
-    hexIndexToInt(cmd.index) >= 0x8000 && hexIndexToInt(cmd.index) < 0x9000 &&
+    hexIndexToInt(cmd.index) >= 0x8000 &&
+    hexIndexToInt(cmd.index) < 0x9000 &&
     (sub === 0x24 || sub === 0x25 || sub === 0x28)
   if (isPortConfig) byteLen = 4
 
@@ -93,16 +99,39 @@ export function moduleInitCmdToSdoEntry(
     bitLength: byteLen * 8,
     name: comment,
     objectName: comment,
+    // Port/module activation (0x8000 PD lengths + Master_Control) is cleared
+    // by the gateway every time it regenerates its mapping, so it must be
+    // applied again after OPERATIONAL -- not just during the PRE-OP pass.
+    applyAfterOperational: isPortConfig,
   }
 }
 
 /**
- * Startup SDOs that activate the selected modules (their CoE InitCmds),
- * ordered by slot then command.  Exported after the device-level startup SDOs
- * so activation values win over the zero defaults.
+ * Display label for an object index: the device CoE dictionary's name when the
+ * object is described there, otherwise the caller-provided fallback.
+ */
+function objectLabelForIndex(device: Pick<ESIDevice, 'coeObjects'>, index: string, fallback: string): string {
+  const target = intToHexIndex(hexIndexToInt(index))
+  const object = (device.coeObjects ?? []).find(
+    (obj: ESICoEObject) => intToHexIndex(hexIndexToInt(obj.index)) === target,
+  )
+  return object?.name || fallback
+}
+
+/**
+ * Build the startup-parameter rows for the selected modules: one row per
+ * scalar CoE InitCmd of every populated slot (index offset applied, tagged
+ * with `moduleSlot`/`moduleIdent`), plus one Class-A power row per physical
+ * port that has any module placed (Senmun layout: 4 cascade levels share a
+ * port, port = slotIndex >> 2).
+ *
+ * These are the module-derived half of a modular device's startup parameters;
+ * they overlay the device's own dictionary-derived rows (which the editor
+ * keeps in `sdoConfigurations` for every object, as before) and are what the
+ * runtime re-applies after OPERATIONAL via `applyAfterOperational`.
  */
 export function buildModuleSdoConfigurations(
-  device: Pick<ESIDevice, 'slots' | 'slotLayout' | 'modules'>,
+  device: Pick<ESIDevice, 'slots' | 'slotLayout' | 'modules' | 'coeObjects'>,
   selections: ModuleSelection[],
 ): SDOConfigurationEntry[] {
   if (!isModularDevice(device)) return []
@@ -111,30 +140,122 @@ export function buildModuleSdoConfigurations(
   const modules = device.modules ?? []
   const layout = device.slotLayout ?? { pdoIncrement: 0, indexIncrement: 0 }
 
-  const sdos: SDOConfigurationEntry[] = []
+  const rows: SDOConfigurationEntry[] = []
+  const poweredPorts = new Set<number>()
   slots.forEach((slot, slotOffset) => {
     const selection = selections.find((s) => s.slotName === slot.name)
     if (!selection || hexIndexToInt(selection.moduleIdent) === 0) return
     const moduleDef = modules.find((m) => m.ident === selection.moduleIdent)
     if (!moduleDef) return
+
     for (const cmd of moduleDef.initCmds ?? []) {
       const entry = moduleInitCmdToSdoEntry(cmd, slotOffset, layout.indexIncrement)
-      if (entry) sdos.push(entry)
+      if (entry)
+        rows.push({
+          ...entry,
+          moduleSlot: slot.name,
+          moduleIdent: moduleDef.ident,
+          objectName: objectLabelForIndex(device, entry.index, moduleDef.name),
+        })
     }
-    // Class-A power-on for the physical port this slot belongs to
-    // (Senmun layout: 8 ports x 4 cascade levels, port = slotIndex >> 2).
-    sdos.push({
-      index: '0x3000',
-      subIndex: (slotOffset >> 2) + 1,
-      value: '2',
-      defaultValue: '2',
-      dataType: 'UINT16',
-      bitLength: 16,
-      name: 'Class A Power Control',
-      objectName: 'Class A Power Control',
-    })
+
+    // Class-A power-on for the physical port this slot belongs to.  Emit one
+    // row per port (not per slot) -- the 4 cascade levels of a port share it.
+    const port = slotOffset >> 2
+    if (!poweredPorts.has(port)) {
+      poweredPorts.add(port)
+      rows.push({
+        index: '0x3000',
+        subIndex: port + 1,
+        value: '2',
+        defaultValue: '2',
+        dataType: 'UINT16',
+        bitLength: 16,
+        name: 'Class A Power Control',
+        objectName: objectLabelForIndex(device, '0x3000', 'Class A Power Control'),
+        applyAfterOperational: true,
+        moduleSlot: slot.name,
+        moduleIdent: moduleDef.ident,
+      })
+    }
   })
-  return sdos
+  return rows
+}
+
+/**
+ * Rebuild a module-derived startup-parameter list while preserving the
+ * operator's overrides across a module re-selection.
+ *
+ * An override (value != defaultValue) is carried over when its row still
+ * exists AND -- for module InitCmd rows -- the same module remains in the same
+ * slot (keyed by moduleSlot|moduleIdent|index|subindex).  Switching the module
+ * of a slot therefore resets that slot to the new module's defaults.  Rows
+ * without module metadata (legacy dictionary-derived rows, e.g. from a project
+ * that predates module support) match by index|subindex only, so hand-entered
+ * ISDU values migrate onto the module rows.  The 0x3000 power rows are keyed
+ * by subindex only (they belong to the port, not to a single module).
+ */
+export function reconcileModuleSdoConfigurations(
+  prev: SDOConfigurationEntry[] | undefined,
+  next: SDOConfigurationEntry[],
+): SDOConfigurationEntry[] {
+  if (!prev || prev.length === 0) return next
+
+  const powerOverrides = new Map<number, string>()
+  const moduleOverrides = new Map<string, string>()
+  const legacyOverrides = new Map<string, string>()
+
+  for (const entry of prev) {
+    if (entry.value === '' || entry.value === entry.defaultValue) continue
+    if (entry.index === '0x3000') {
+      powerOverrides.set(entry.subIndex, entry.value)
+    } else if (entry.moduleSlot) {
+      moduleOverrides.set(
+        `${entry.moduleSlot}|${entry.moduleIdent ?? ''}|${entry.index}|${entry.subIndex}`,
+        entry.value,
+      )
+    } else {
+      legacyOverrides.set(`${entry.index}|${entry.subIndex}`, entry.value)
+    }
+  }
+  if (powerOverrides.size === 0 && moduleOverrides.size === 0 && legacyOverrides.size === 0) return next
+
+  return next.map((entry) => {
+    if (entry.index === '0x3000') {
+      const override = powerOverrides.get(entry.subIndex)
+      return override !== undefined ? { ...entry, value: override } : entry
+    }
+    const override =
+      moduleOverrides.get(`${entry.moduleSlot}|${entry.moduleIdent ?? ''}|${entry.index}|${entry.subIndex}`) ??
+      legacyOverrides.get(`${entry.index}|${entry.subIndex}`)
+    return override !== undefined ? { ...entry, value: override } : entry
+  })
+}
+
+/**
+ * Merge a modular device's startup-parameter rows: the device's own CoE
+ * dictionary rows (base, module-independent) followed by the module-derived
+ * rows.  For the same object entry the later (module) row wins -- exactly the
+ * write order the original runtime relied on (`[...dictionary, ...module]`),
+ * just collapsed into a single duplicate-free list for storage/display.
+ */
+export function mergeModuleSdoRows(
+  base: SDOConfigurationEntry[] | undefined,
+  moduleRows: SDOConfigurationEntry[],
+): SDOConfigurationEntry[] {
+  const merged: SDOConfigurationEntry[] = []
+  const indexByKey = new Map<string, number>()
+  for (const entry of [...(base ?? []), ...moduleRows]) {
+    const key = `${entry.index}|${entry.subIndex}`
+    const existing = indexByKey.get(key)
+    if (existing !== undefined) {
+      merged[existing] = entry
+    } else {
+      indexByKey.set(key, merged.length)
+      merged.push(entry)
+    }
+  }
+  return merged
 }
 
 /** Parse a hex object index ("0x1690" / "#x1690") to an integer. */
@@ -347,18 +468,20 @@ export function listUnconfiguredModuleDevices(
  * calls when the user changes a slot assignment.
  */
 export function buildModuleEnrich(
-  device: Pick<ESIDevice, 'slots' | 'slotLayout' | 'modules' | 'rxPdo' | 'txPdo'>,
+  device: Pick<ESIDevice, 'slots' | 'slotLayout' | 'modules' | 'rxPdo' | 'txPdo' | 'coeObjects'>,
   selections: ModuleSelection[],
   usedAddresses?: Set<string>,
+  previousSdoConfigurations?: SDOConfigurationEntry[],
 ): {
   channelInfo: PersistedChannelInfo[]
   rxPdos: PersistedPdo[]
   txPdos: PersistedPdo[]
   slaveType: string
+  sdoConfigurations: SDOConfigurationEntry[]
   channelMappings: EtherCATChannelMapping[]
   moduleSlots?: PersistedModuleSlot[]
   moduleSelections?: ModuleSelection[]
-  moduleSdoConfigurations?: SDOConfigurationEntry[]
+  moduleSdoConfigurations?: undefined
 } {
   const image = buildModuleProcessImage(device, selections)
   const channels = pdoToChannels({ rxPdo: image.rxPdo, txPdo: image.txPdo })
@@ -375,14 +498,35 @@ export function buildModuleEnrich(
     iecType: esiTypeToIecType(ch.dataType, ch.bitLen),
   }))
 
+  // Startup parameters = the device's own CoE dictionary rows (base, kept
+  // verbatim for every object -- global and per-port alike, exactly as the
+  // original export) overlaid with the module-derived rows for the populated
+  // slots (operator overrides preserved by the reconciler).  The merged list
+  // is the single source the UI shows and the runtime receives; for a given
+  // object entry the module value wins, matching the original write order
+  // `[...dictionary, ...module]`.
+  const previous = previousSdoConfigurations ?? []
+  const baseRows = previous.filter((entry) => !entry.moduleSlot)
+  const moduleRows = reconcileModuleSdoConfigurations(previous, buildModuleSdoConfigurations(device, selections))
+
   return {
     channelInfo,
-    rxPdos: persistPdos(image.rxPdo),
-    txPdos: persistPdos(image.txPdo),
+    // The coupler's own fixed PDOs (0x1680 / 0x1A80 / 0x1A81) are NOT
+    // exported to the runtime config: the master already adds them to the
+    // PDO assignment and re-bases the module channel offsets to account for
+    // their SM prefix.  Shipping them here makes the runtime re-sum a
+    // (potentially large) fixed PDO entry list and mis-compute the module
+    // channel offsets (see the runtime's rebase_module_channel_offsets).
+    rxPdos: persistPdos(image.rxPdo.filter((pdo) => !pdo.fixed)),
+    txPdos: persistPdos(image.txPdo.filter((pdo) => !pdo.fixed)),
     slaveType: deriveSlaveType({ rxPdo: image.rxPdo, txPdo: image.txPdo }),
+    sdoConfigurations: mergeModuleSdoRows(baseRows, moduleRows),
     channelMappings: generateDefaultChannelMappings(channels, usedAddresses),
     moduleSlots: isModularDevice(device) ? buildModuleCatalog(device) : undefined,
     moduleSelections: isModularDevice(device) ? selections : undefined,
-    moduleSdoConfigurations: buildModuleSdoConfigurations(device, selections),
+    // Legacy field retired for module support: startup parameters for a
+    // modular device now live in `sdoConfigurations`.  Undefined here clears
+    // the stale persisted value.
+    moduleSdoConfigurations: undefined,
   }
 }

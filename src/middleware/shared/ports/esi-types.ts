@@ -174,6 +174,30 @@ export interface SDOConfigurationEntry {
   name: string
   /** Parent object name */
   objectName: string
+  /**
+   * True when this entry is a module/port activation SDO that the gateway
+   * clears whenever it regenerates its PDO mapping (each PRE-OP->SAFE-OP).
+   * Such entries must be (re)applied once AFTER the bus is OPERATIONAL; the
+   * runtime serializes this as `apply_after_operational`.  Set on entries
+   * derived from a module's CoE InitCmd port/power set, never on ordinary
+   * device-level startup parameters.
+   */
+  applyAfterOperational?: boolean
+  /**
+   * For modular (Slot/Module) devices: the slot name this entry was derived
+   * from.  Such entries are the single source for a modular device's startup
+   * parameters (the device CoE dictionary's per-port objects are layout
+   * driven and are NOT surfaced).  Absent on device-level entries of a flat
+   * device, and on legacy rows that predate module support.
+   */
+  moduleSlot?: string
+  /**
+   * For modular entries: the ModuleIdent (e.g. "0x2c01") this row was derived
+   * from.  Lets the editor keep operator overrides only while the same module
+   * stays in the same slot (a module change resets to the new module's
+   * defaults) and detect rows that no longer apply.
+   */
+  moduleIdent?: string
 }
 
 // ===================== DEVICE ENRICHMENT =====================
@@ -442,6 +466,13 @@ export interface PersistedPdo {
   name: string
   /** PDO entries including padding */
   entries: PersistedPdoEntry[]
+  /**
+   * True for the coupler's own fixed PDOs (e.g. a modular gateway's PDI/CQ
+   * status objects).  These remain part of the runtime process image (they
+   * are assigned and mapped) but are NOT exposed as PLC channels.  Absent on
+   * older persisted projects.
+   */
+  fixed?: boolean
 }
 
 /**

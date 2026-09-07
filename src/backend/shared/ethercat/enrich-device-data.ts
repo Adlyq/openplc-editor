@@ -85,6 +85,11 @@ export function enrichDeviceData(
   // channel set comes entirely from the per-slot module selection.  Every
   // slot defaults to NO-Slave (empty port); the operator assigns the real
   // modules in the device's Module Selection tab.
+  //
+  // Startup parameters: the device CoE dictionary rows are kept in full (all
+  // objects, as the original runtime expected); the module-derived per-port
+  // values overlay them and are stored separately by the module-selection
+  // flow (buildModuleSdoConfigurations), never by dropping dictionary rows.
   if (isModularDevice(device)) {
     const moduleSlots = buildModuleCatalog(device)
     return {

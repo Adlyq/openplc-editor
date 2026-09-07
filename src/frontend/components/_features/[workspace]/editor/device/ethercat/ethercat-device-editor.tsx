@@ -429,6 +429,15 @@ const EtherCATDeviceEditor = ({ busName: propBusName, deviceId: propDeviceId }: 
           className='flex min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden'
         >
           <div className='flex min-h-0 flex-1 flex-col overflow-auto p-4'>
+            {isModular && !(device.sdoConfigurations ?? []).some((entry) => entry.moduleSlot) && (
+              <div className='mb-3 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400'>
+                The per-port parameters of this modular slave (ISDU configuration, port configuration and Class-A power)
+                are generated from the modules you place on the{' '}
+                <span className='font-medium text-neutral-800 dark:text-neutral-200'>Module Selection</span> tab. Assign
+                a module to a port to see and edit its parameters here. Global device parameters below stay editable
+                regardless.
+              </div>
+            )}
             <SdoParametersSection
               isLoading={isLoadingChannels}
               loadError={channelLoadError}

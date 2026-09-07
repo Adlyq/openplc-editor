@@ -710,6 +710,7 @@ const PersistedPdoSchema = z.object({
   index: z.string(),
   name: z.string(),
   entries: z.array(PersistedPdoEntrySchema),
+  fixed: z.boolean().optional(),
 })
 
 const PersistedChannelInfoSchema = z.object({
@@ -733,6 +734,12 @@ const SDOConfigurationEntrySchema = z.object({
   bitLength: z.number(),
   name: z.string(),
   objectName: z.string(),
+  /** Module/port activation SDO: must be re-applied after OPERATIONAL (see
+   *  SDOConfigurationEntry).  Omitted on older projects that predate it. */
+  applyAfterOperational: z.boolean().optional(),
+  /** Modular devices: originating slot / ModuleIdent (see SDOConfigurationEntry). */
+  moduleSlot: z.string().optional(),
+  moduleIdent: z.string().optional(),
 })
 
 /**
