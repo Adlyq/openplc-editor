@@ -16,6 +16,7 @@ import type { OrchestratorPort } from '../ports/orchestrator-port'
 import type { PackagePort } from '../ports/package-port'
 import type { PlatformCapabilities } from '../ports/platform-capabilities'
 import type { ProjectPort } from '../ports/project-port'
+import type { RuntimeConnectionsPort } from '../ports/runtime-connections-port'
 import type { RuntimePort } from '../ports/runtime-port'
 import type { SimulatorPort } from '../ports/simulator-port'
 import type { StlibSourcePort } from '../ports/stlib-source-port'
@@ -27,6 +28,8 @@ import type { WindowPort } from '../ports/window-port'
 export interface PlatformPorts {
   compiler: CompilerPort
   runtime: RuntimePort
+  /** Optional — recent runtime one-click connections (desktop has it; web may not). */
+  runtimeConnections?: RuntimeConnectionsPort
   debugger: DebuggerPort
   simulator: SimulatorPort
   project: ProjectPort

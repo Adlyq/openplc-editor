@@ -24,6 +24,7 @@ import { createEditorOrchestratorAdapter } from './adapters/editor/orchestrator-
 import { createEditorPackageAdapter } from './adapters/editor/package-adapter'
 import { createEditorProjectAdapter } from './adapters/editor/project-adapter'
 import { createEditorRuntimeAdapter } from './adapters/editor/runtime-adapter'
+import { runtimeConnectionsAdapter } from './adapters/editor/runtime-connections-adapter'
 import { createEditorSimulatorAdapter } from './adapters/editor/simulator-adapter'
 import { createEditorStlibSourceAdapter } from './adapters/editor/stlib-source-adapter'
 import { createEditorSystemAdapter } from './adapters/editor/system-adapter'
@@ -71,6 +72,7 @@ editorRuntime.openFetchedProject = async (project) => {
 export const editorPorts: PlatformPorts = {
   compiler: createEditorCompilerAdapter(),
   runtime: editorRuntime,
+  runtimeConnections: runtimeConnectionsAdapter,
   debugger: createEditorDebuggerAdapter(),
   simulator: createEditorSimulatorAdapter(),
   project: editorProject,

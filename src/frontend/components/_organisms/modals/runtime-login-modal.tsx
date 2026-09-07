@@ -1,3 +1,4 @@
+import { usePlatform } from '@root/middleware/shared/providers/platform-context'
 import { useState } from 'react'
 
 import { useRuntime } from '../../../../middleware/shared/providers'
@@ -9,6 +10,7 @@ import { Modal, ModalContent, ModalTitle } from '../../_molecules/modal'
 const RuntimeLoginModal = () => {
   const { modals, modalActions, deviceActions, runtimeConnection } = useOpenPLCStore()
   const runtime = useRuntime()
+  const runtimeConnections = usePlatform().runtimeConnections
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -36,6 +38,10 @@ const RuntimeLoginModal = () => {
         deviceActions.setRuntimeJwtToken(result.accessToken)
         deviceActions.setRuntimeConnectionStatus('connected')
         deviceActions.setStoredCredentials({ username, password })
+        const ip = useOpenPLCStore.getState().runtimeConnection.ipAddress
+        if (ip) {
+          void runtimeConnections?.add({ ip, username, password, lastConnectedAt: new Date().toISOString() })
+        }
         modalActions.closeModal()
         setUsername('')
         setPassword('')

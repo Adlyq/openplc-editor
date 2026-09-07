@@ -80,6 +80,7 @@ import { PackageManagerModule } from '../../../backend/editor/package-manager'
 import { BootloaderApiClient } from '../../../backend/editor/runtime/bootloader-api-client'
 import { RuntimeApiClient } from '../../../backend/editor/runtime/runtime-api-client'
 import { logger } from '../../../backend/editor/services'
+import * as runtimeConnectionsService from '../../../backend/editor/services/runtime-connections-service'
 import {
   getOpenProjectPath,
   getPlcopenExportSavePath,
@@ -804,6 +805,9 @@ class MainProcessBridge implements MainIpcModule {
     this.registerHandle('catalog:install-many', this.handleCatalogInstallMany)
     this.registerHandle('app:store-retrieve-recent', this.handleStoreRetrieveRecent)
     this.registerHandle('project:remove-from-recent', this.handleRemoveProjectFromRecent)
+    this.registerHandle('runtime-connections:list', this.handleRuntimeConnectionsList)
+    this.registerHandle('runtime-connections:add', this.handleRuntimeConnectionsAdd)
+    this.registerHandle('runtime-connections:remove', this.handleRuntimeConnectionsRemove)
     this.registerHandle('project:delete', this.handleDeleteProject)
     this.ipcMain.on('app:quit', this.handleAppQuit)
     // this.ipcMain.on('app:reply-if-app-is-closing', (_, shouldQuit) => { ... })
@@ -1279,6 +1283,51 @@ class MainProcessBridge implements MainIpcModule {
    * the safety rationale. Returns the service's response shape
    * verbatim so the renderer can surface the failure message.
    */
+  runtimeConnectionsFilePath(): string {
+    return join(app.getPath('userData'), 'User', 'History', 'runtime-connections.json')
+  }
+
+  handleRuntimeConnectionsList = async (): Promise<{ success: boolean; records?: unknown[]; error?: string }> => {
+    try {
+      const records = await runtimeConnectionsService.readRuntimeConnections(this.runtimeConnectionsFilePath())
+      return { success: true, records }
+    } catch (error) {
+      logger.error('Error reading runtime connections: ' + getErrorMessage(error))
+      return { success: false, error: getErrorMessage(error) }
+    }
+  }
+
+  handleRuntimeConnectionsAdd = async (
+    _event: unknown,
+    record: { ip: string; username: string; password: string },
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      await runtimeConnectionsService.addRuntimeConnection(this.runtimeConnectionsFilePath(), {
+        ip: record?.ip ?? '',
+        username: record?.username ?? '',
+        password: record?.password ?? '',
+        lastConnectedAt: new Date().toISOString(),
+      })
+      return { success: true }
+    } catch (error) {
+      logger.error('Error saving runtime connection: ' + getErrorMessage(error))
+      return { success: false, error: getErrorMessage(error) }
+    }
+  }
+
+  handleRuntimeConnectionsRemove = async (
+    _event: unknown,
+    ip: string,
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      await runtimeConnectionsService.removeRuntimeConnection(this.runtimeConnectionsFilePath(), ip)
+      return { success: true }
+    } catch (error) {
+      logger.error('Error removing runtime connection: ' + getErrorMessage(error))
+      return { success: false, error: getErrorMessage(error) }
+    }
+  }
+
   handleDeleteProject = async (_event: unknown, projectPath: string) => {
     try {
       return await this.projectService.deleteProject(projectPath)

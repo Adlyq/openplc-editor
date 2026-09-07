@@ -1,3 +1,4 @@
+import { usePlatform } from '@root/middleware/shared/providers/platform-context'
 import { useEffect, useRef } from 'react'
 
 import { useRuntime } from '../../../../middleware/shared/providers'
@@ -14,6 +15,7 @@ import { RuntimeUserModal, type RuntimeUserModalSubmit } from './runtime-user-mo
 const RuntimeCreateUserModal = () => {
   const { modals, modalActions, deviceActions } = useOpenPLCStore()
   const runtime = useRuntime()
+  const runtimeConnections = usePlatform().runtimeConnections
 
   const isOpen = modals['runtime-create-user']?.open || false
 
@@ -40,6 +42,10 @@ const RuntimeCreateUserModal = () => {
         deviceActions.setRuntimeJwtToken(loginResult.accessToken)
         deviceActions.setRuntimeConnectionStatus('connected')
         deviceActions.setStoredCredentials({ username, password })
+        const ip = useOpenPLCStore.getState().runtimeConnection.ipAddress
+        if (ip) {
+          void runtimeConnections?.add({ ip, username, password, lastConnectedAt: new Date().toISOString() })
+        }
         succeededRef.current = true
         return null
       }

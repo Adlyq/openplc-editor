@@ -224,6 +224,15 @@ const rendererProcessBridge = {
   quitAppRequest: (callback: IpcRendererCallbacks) => subscribe('app:quit-accelerator', callback),
   retrieveRecent: (): Promise<{ name: string; path: string; lastOpenedAt: string; createdAt: string }[]> =>
     ipcRenderer.invoke('app:store-retrieve-recent'),
+  runtimeConnectionsList: (): Promise<{ success: boolean; records?: unknown[]; error?: string }> =>
+    ipcRenderer.invoke('runtime-connections:list'),
+  runtimeConnectionsAdd: (record: {
+    ip: string
+    username: string
+    password: string
+  }): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('runtime-connections:add', record),
+  runtimeConnectionsRemove: (ip: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('runtime-connections:remove', ip),
   /** Drop a recent-projects entry without touching disk — used by the
    *  start screen's "Remove from list" action. */
   removeProjectFromRecent: (projectPath: string): Promise<{ success: boolean; error?: string }> =>

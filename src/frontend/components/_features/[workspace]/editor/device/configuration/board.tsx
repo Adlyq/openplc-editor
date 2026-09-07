@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-misused-promises */
-import { useCapabilities, useDevice, useRuntime } from '@root/middleware/shared/providers/platform-context'
+import type { RuntimeConnectionRecord } from '@root/middleware/shared/ports/runtime-connections-port'
+import { useCapabilities, useDevice, usePlatform, useRuntime } from '@root/middleware/shared/providers/platform-context'
 import { resolveTargetCapabilities } from '@root/middleware/shared/utils/target-capabilities'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -93,6 +94,7 @@ const Board = memo(function () {
   const setRuntimeJwtToken = useOpenPLCStore((state) => state.deviceActions.setRuntimeJwtToken)
   const clearDeviceLicense = useOpenPLCStore((state) => state.deviceActions.clearDeviceLicense)
   const setRuntimeVersion = useOpenPLCStore((state) => state.deviceActions.setRuntimeVersion)
+  const setStoredCredentials = useOpenPLCStore((state) => state.deviceActions.setStoredCredentials)
   const openModal = useOpenPLCStore((state) => state.modalActions.openModal)
   const plcStatus = useOpenPLCStore((state): RuntimeConnection['plcStatus'] => state.runtimeConnection.plcStatus)
 
@@ -367,6 +369,80 @@ const Board = memo(function () {
     ],
   )
   const handleRowClick = (row: HTMLTableRowElement) => setCurrentSelectedPinTableRow(parseInt(row.id))
+
+  const { runtimeConnections } = usePlatform()
+  const [recentConnections, setRecentConnections] = useState<RuntimeConnectionRecord[]>([])
+
+  const refreshRecent = useCallback(async () => {
+    if (!runtimeConnections) return
+    const res = await runtimeConnections.list()
+    if (res.success) setRecentConnections(res.records)
+  }, [runtimeConnections])
+
+  useEffect(() => {
+    void refreshRecent()
+  }, [refreshRecent])
+
+  const recordConnection = useCallback(
+    async (ip: string, username: string, password: string) => {
+      if (!runtimeConnections || !ip) return
+      await runtimeConnections.add({ ip, username, password, lastConnectedAt: new Date().toISOString() })
+      void refreshRecent()
+    },
+    [runtimeConnections, refreshRecent],
+  )
+
+  const forgetConnection = useCallback(
+    async (ip: string) => {
+      if (!runtimeConnections) return
+      await runtimeConnections.remove(ip)
+      void refreshRecent()
+    },
+    [runtimeConnections, refreshRecent],
+  )
+
+  const connectStored = useCallback(
+    async (record: RuntimeConnectionRecord) => {
+      if (connectionStatus === 'connected') return
+      setRuntimeIpAddress(record.ip)
+      setRuntimeConnectionStatus('connecting')
+      try {
+        const info = await runtime.getUsersInfo()
+        if (info.error) {
+          setRuntimeConnectionStatus('error')
+          return
+        }
+        setRuntimeVersion(info.runtimeVersion ?? null)
+        if (!info.hasUsers) {
+          openModal('runtime-create-user', null)
+          return
+        }
+        const login = await runtime.login({ username: record.username, password: record.password })
+        if (login.success && login.accessToken) {
+          setRuntimeJwtToken(login.accessToken)
+          setRuntimeConnectionStatus('connected')
+          setStoredCredentials({ username: record.username, password: record.password })
+          void recordConnection(record.ip, record.username, record.password)
+        } else {
+          setRuntimeConnectionStatus('disconnected')
+          openModal('runtime-login', null)
+        }
+      } catch {
+        setRuntimeConnectionStatus('error')
+      }
+    },
+    [
+      runtime,
+      connectionStatus,
+      setRuntimeIpAddress,
+      setRuntimeConnectionStatus,
+      setRuntimeJwtToken,
+      setStoredCredentials,
+      setRuntimeVersion,
+      openModal,
+      recordConnection,
+    ],
+  )
 
   const handleConnectToRuntime = useCallback(async () => {
     if (connectionStatus === 'connected') {
@@ -719,6 +795,35 @@ const Board = memo(function () {
                   />
                 ) : null}
               </DeviceConnectButton>
+              {recentConnections.length > 0 && (
+                <div className='mt-1 flex flex-wrap items-center gap-1.5'>
+                  {recentConnections.map((rc) => (
+                    <span
+                      key={rc.ip}
+                      className='inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-neutral-100 px-2 py-0.5 text-xs text-neutral-700 hover:border-brand dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200'
+                    >
+                      <button
+                        type='button'
+                        title={`One-click connect to ${rc.ip}`}
+                        className='cursor-pointer'
+                        onClick={() => void connectStored(rc)}
+                      >
+                        {rc.ip}
+                        {rc.username ? ` (${rc.username})` : ''}
+                      </button>
+                      <button
+                        type='button'
+                        aria-label='Forget connection'
+                        title='Forget this connection'
+                        className='cursor-pointer text-neutral-400 hover:text-red-500'
+                        onClick={() => void forgetConnection(rc.ip)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </>
           ) : capabilities.hasLocalSerialPorts ? (
             <>
