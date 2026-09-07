@@ -1,4 +1,4 @@
-import { ComponentPropsWithoutRef } from 'react'
+import { ComponentPropsWithoutRef, useCallback, useState } from 'react'
 
 import type { DebugTreeNode } from '../../../../middleware/shared/ports/types'
 import { ArrowIcon } from '../../../assets/icons/interface/Arrow'
@@ -14,8 +14,43 @@ type TreeNodeProps = ComponentPropsWithoutRef<'div'> & {
   isForced?: (compositeKey: string) => boolean
   getForcedValue?: (compositeKey: string) => boolean | undefined
   canForce?: (node: DebugTreeNode) => boolean
-  onRowClick?: (node: DebugTreeNode, position: { x: number; y: number }) => void
+  /** Soft-write a value (force=false); BOOL passes a boolean, others text. */
+  onWriteValue?: (compositeKey: string, variableType: string, value: string | boolean, lookupKey?: string) => void
+  /** Turn a variable's force on/off (on = force the current value). */
+  onToggleForce?: (
+    compositeKey: string,
+    variableType: string,
+    forceOn: boolean,
+    lookupKey?: string,
+    currentValue?: string,
+  ) => void
   level?: number
+}
+
+/** Inline numeric/string value editor that commits on Enter and cancels on Esc/blur. */
+const EditableValue = ({ text, onCommit }: { text: string; onCommit: (value: string) => void }) => {
+  const [value, setValue] = useState(text)
+
+  const commit = useCallback(() => {
+    if (value.trim().length > 0) onCommit(value.trim())
+  }, [value, onCommit])
+
+  return (
+    <input
+      autoFocus
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onFocus={(e) => e.target.select()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit()
+        else if (e.key === 'Escape') setValue(text)
+      }}
+      onBlur={() => {
+        if (value.trim().length > 0 && value.trim() !== text) onCommit(value.trim())
+      }}
+      className='h-[20px] w-24 rounded border border-brand bg-white px-1 font-mono text-xs text-neutral-900 outline-none dark:bg-neutral-950 dark:text-neutral-100'
+    />
+  )
 }
 
 const TreeNode = ({
@@ -27,19 +62,23 @@ const TreeNode = ({
   isForced,
   getForcedValue,
   canForce,
-  onRowClick,
+  onWriteValue,
+  onToggleForce,
   level = 0,
   ...rest
 }: TreeNodeProps) => {
+  const [editing, setEditing] = useState(false)
   const indentWidth = level * 16
   const isCurrentNodeViewing = isViewing ? isViewing(node.compositeKey) : false
   const isCurrentNodeForced = isForced ? isForced(node.compositeKey) : false
   const forcedValue = getForcedValue ? getForcedValue(node.compositeKey) : undefined
   const canForceNode = canForce ? canForce(node) : false
+  const isLeaf = !node.isComplex
 
-  // For root-level nodes, derive a more informative label from compositeKey
-  // This shows full path for nested FB instances (e.g., "main.IRRIGATION_MAIN_CONTROLLER0.TON0")
-  // while keeping short names for children (e.g., "Q", "ET", "ENO")
+  const lookupKey = node.debugIndex !== undefined ? node.fullPath : node.compositeKey
+  const valueText = isLeaf ? getValue?.(node.compositeKey) : undefined
+  const isBool = isLeaf && (node.type.toUpperCase() === 'BOOL' || node.type.toUpperCase() === 'X')
+
   const isRoot = level === 0
   let displayLabel = node.name
   if (isRoot) {
@@ -63,10 +102,27 @@ const TreeNode = ({
     }
   }
 
-  const handleRowBodyClick = (e: React.MouseEvent) => {
-    if (canForceNode && onRowClick) {
-      onRowClick(node, { x: e.clientX, y: e.clientY })
+  const handleValueClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!isLeaf || !canForceNode) return
+    if (isBool && onWriteValue) {
+      const currentOn = valueText === 'TRUE' || valueText === '1'
+      onWriteValue(node.compositeKey, node.type, !currentOn, lookupKey)
+      return
     }
+    setEditing(true)
+  }
+
+  const commitEdit = useCallback(
+    (text: string) => {
+      setEditing(false)
+      onWriteValue?.(node.compositeKey, node.type, text, lookupKey)
+    },
+    [node.compositeKey, node.type, lookupKey, onWriteValue],
+  )
+
+  const toggleForce = (checked: boolean) => {
+    onToggleForce?.(node.compositeKey, node.type, checked, lookupKey, valueText)
   }
 
   const textColor = isCurrentNodeForced ? (forcedValue ? '#80C000' : '#4080FF') : undefined
@@ -102,39 +158,52 @@ const TreeNode = ({
 
         <div
           className={cn(
-            'grid min-w-0 flex-1 grid-cols-[1fr_auto_auto] items-center gap-2 py-1',
-            canForceNode && 'cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-850',
+            'grid min-w-0 flex-1 grid-cols-[1fr_auto_auto_auto] items-center gap-2 py-1',
+            isLeaf && canForceNode && 'cursor-text hover:bg-neutral-100 dark:hover:bg-neutral-850',
           )}
           style={{ paddingLeft: `${indentWidth}px` }}
-          onClick={handleRowBodyClick}
         >
-          <div className='flex min-w-0 items-center gap-2'>
-            <p
-              className='truncate text-neutral-1000 dark:text-white'
-              style={{
-                color: textColor,
-                fontWeight: isCurrentNodeForced ? 600 : undefined,
-              }}
-            >
-              {displayLabel}
-            </p>
-          </div>
-          <p className='uppercase text-neutral-400 dark:text-neutral-700'>{node.type}</p>
           <p
-            className='text-neutral-1000 dark:text-white'
+            className='truncate text-neutral-1000 dark:text-white'
             style={{
               color: textColor,
               fontWeight: isCurrentNodeForced ? 600 : undefined,
             }}
           >
-            {node.isComplex && !node.isExpanded
-              ? '...'
-              : node.isComplex
-                ? ''
-                : getValue
-                  ? (getValue(node.compositeKey) ?? '-')
-                  : '-'}
+            {displayLabel}
           </p>
+          <p className='uppercase text-neutral-400 dark:text-neutral-700'>{node.type}</p>
+
+          {node.isComplex && !node.isExpanded ? (
+            <button className='text-neutral-500' onClick={handleToggleExpand}>
+              ...
+            </button>
+          ) : node.isComplex ? (
+            <span />
+          ) : editing ? (
+            <EditableValue text={valueText ?? '0'} onCommit={commitEdit} />
+          ) : (
+            <button
+              className='text-left text-neutral-1000 dark:text-white'
+              style={{ color: textColor, fontWeight: isCurrentNodeForced ? 600 : undefined }}
+              onClick={handleValueClick}
+              title={canForceNode ? (isBool ? 'Click to toggle value' : 'Click to edit value') : undefined}
+            >
+              {valueText ?? '-'}
+            </button>
+          )}
+
+          {isLeaf && canForceNode ? (
+            <input
+              type='checkbox'
+              checked={isCurrentNodeForced}
+              onChange={(e) => toggleForce(e.target.checked)}
+              title='Force (pin) this variable'
+              className='h-3.5 w-3.5 cursor-pointer'
+            />
+          ) : (
+            <span />
+          )}
         </div>
       </div>
 
@@ -151,7 +220,8 @@ const TreeNode = ({
               isForced={isForced}
               getForcedValue={getForcedValue}
               canForce={canForce}
-              onRowClick={onRowClick}
+              onWriteValue={onWriteValue}
+              onToggleForce={onToggleForce}
               level={level + 1}
             />
           ))}

@@ -1,4 +1,5 @@
 import * as Tabs from '@radix-ui/react-tabs'
+import { isModuleSelectionComplete } from '@root/backend/shared/ethercat/module-process-image'
 import { useDeviceConfiguration } from '@root/frontend/hooks/use-device-configuration'
 import { useOpenPLCStore } from '@root/frontend/store'
 import { cn } from '@root/frontend/utils/cn'
@@ -23,8 +24,9 @@ import {
   DeviceConfigurationForm,
   SdoParametersSection,
 } from './components/device-configuration-form'
+import { ModuleSelectionTab } from './components/module-selection-tab'
 
-type DeviceDetailTab = 'info' | 'configuration' | 'startup-params' | 'channel-mappings' | 'axis'
+type DeviceDetailTab = 'info' | 'configuration' | 'startup-params' | 'channel-mappings' | 'axis' | 'modules'
 
 const TabItem = ({ value, label, isActive }: { value: string; label: string; isActive: boolean }) => (
   <Tabs.Trigger
@@ -109,11 +111,18 @@ const EtherCATDeviceEditor = ({ busName: propBusName, deviceId: propDeviceId }: 
   // Channel Mappings tab is hidden and the SoftMotion Axis tab leads.
   const isSoftMotion = !!device?.cia402?.enabled
 
+  // A modular (Slot/Module) slave whose ports are not configured yet.  It has
+  // an intentionally empty process image until modules are assigned.
+  const isModular = (device?.moduleSlots?.length ?? 0) > 0
+  const modulesConfigured = isModuleSelectionComplete(device?.moduleSlots, device?.moduleSelections)
+
   // Channel Mappings is hidden for SoftMotion drives; if it was the active
-  // tab (the default), fall through to the SoftMotion Axis tab.
+  // tab (the default), fall through to the SoftMotion Axis tab.  Modular
+  // slaves that are still unconfigured open straight into the module picker.
   useEffect(() => {
     if (isSoftMotion && activeTab === 'channel-mappings') setActiveTab('axis')
-  }, [isSoftMotion, activeTab])
+    if (isModular && !modulesConfigured && activeTab === 'channel-mappings') setActiveTab('modules')
+  }, [isSoftMotion, isModular, modulesConfigured, activeTab])
 
   // Pool of every claim from producers active on the current target.
   // EtherCAT is sharing the image table with VPP and Modbus TCP on
@@ -316,11 +325,30 @@ const EtherCATDeviceEditor = ({ busName: propBusName, deviceId: propDeviceId }: 
           {!isSoftMotion && (
             <TabItem value='channel-mappings' label='Channel Mappings' isActive={activeTab === 'channel-mappings'} />
           )}
+          {isModular && (
+            <TabItem
+              value='modules'
+              label={`Module Selection${modulesConfigured ? '' : ' •'}`}
+              isActive={activeTab === 'modules'}
+            />
+          )}
           {device.cia402 && <TabItem value='axis' label='SoftMotion Axis' isActive={activeTab === 'axis'} />}
           <TabItem value='info' label='Device Info' isActive={activeTab === 'info'} />
           <TabItem value='configuration' label='Configuration' isActive={activeTab === 'configuration'} />
           <TabItem value='startup-params' label='Startup Parameters' isActive={activeTab === 'startup-params'} />
         </Tabs.List>
+
+        {/* Module Selection Tab — modular (Slot/Module) slaves only */}
+        {isModular && (
+          <Tabs.Content
+            value='modules'
+            className='flex min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden'
+          >
+            <div className='flex min-h-0 flex-1 flex-col overflow-auto'>
+              <ModuleSelectionTab device={device} externalAddresses={externalAddresses} onEnrich={handleEnrichDevice} />
+            </div>
+          </Tabs.Content>
+        )}
 
         {/* SoftMotion Axis (CiA 402) Tab */}
         {device.cia402 && (

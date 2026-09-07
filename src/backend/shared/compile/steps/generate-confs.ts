@@ -40,6 +40,7 @@ import { generateModbusSlaveConfig } from '../../../../frontend/utils/modbus/gen
 import { generateOpcUaConfig, OpcUaConfigError } from '../../../../frontend/utils/opcua'
 import { generateS7CommConfig } from '../../../../frontend/utils/s7comm'
 import { generateEthercatConfig } from '../../ethercat/generate-ethercat-config'
+import { listUnconfiguredModuleDevices } from '../../ethercat/module-process-image'
 import { validateEthercatConfig } from '../../ethercat/validate-ethercat-config'
 import type { PLCRemoteDevice, PLCServer } from '../../types/PLC/open-plc'
 import { generateModbusMasterConfig } from '../../utils/modbus/generate-modbus-master-config'
@@ -146,6 +147,19 @@ export function generateRuntimeConfs(input: GenerateConfsInput): GenerateConfsOu
   // compile before the composer runs.  Validation failures throw a
   // plain `Error` — caller's try/catch wraps it with the runtime-v4
   // "Stopping compilation process" log line, matching the editor.
+  //
+  // Modular (Slot/Module) slaves carry an intentionally empty process
+  // image until the operator assigns a module to every slot, so an
+  // incomplete selection must fail the build the same way a malformed
+  // JSON would -- never upload a bus whose IO is silently missing.
+  const ethercatSlaves = (remoteDevices ?? [])
+    .filter((rd) => rd.protocol === 'ethercat' && rd.ethercatConfig)
+    .flatMap((rd) => rd.ethercatConfig?.devices ?? [])
+  const moduleSelectionErrors = listUnconfiguredModuleDevices(ethercatSlaves)
+  if (moduleSelectionErrors.length > 0) {
+    throw new Error(`EtherCAT configuration is invalid: ${moduleSelectionErrors.join('; ')}`)
+  }
+
   const ethercat = generateEthercatConfig(remoteDevices)
   const ethercatErrors = validateEthercatConfig(ethercat)
   if (ethercatErrors.length > 0) {

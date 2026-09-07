@@ -150,9 +150,16 @@ export function buildGetListRequest(indexes: number[]): Uint8Array {
 /**
  * `index` is packed DebugAddr (`(arr << 16) | elem`).  Wire layout:
  * [FC=0x42, arr:U8, elem:U16BE, force:U8, len:U16BE, value...].
+ *
+ * Semantics of `force` + payload:
+ *   - force=true  (+payload)  -> FORCE the variable to the payload;
+ *   - force=false (+payload)  -> SOFT WRITE the variable (no force; the PLC
+ *                                program may overwrite it on the next cycle);
+ *   - force=false (no payload)-> UNFORCE / release a previously forced var.
  */
 export function buildSetVariableRequest(index: number, force: boolean, valueBuffer?: Uint8Array): Uint8Array {
-  const dataLength = force && valueBuffer ? valueBuffer.length : 1
+  const payload = valueBuffer !== undefined && valueBuffer.length > 0 ? valueBuffer : undefined
+  const dataLength = payload !== undefined ? payload.length : 0
   const buf = alloc(7 + dataLength)
   const arr = (index >>> 16) & 0xff
   const elem = index & 0xffff
@@ -161,10 +168,8 @@ export function buildSetVariableRequest(index: number, force: boolean, valueBuff
   writeU16BE(buf, 2, elem)
   writeU8(buf, 4, force ? 1 : 0)
   writeU16BE(buf, 5, dataLength)
-  if (force && valueBuffer) {
-    buf.set(valueBuffer, 7)
-  } else {
-    writeU8(buf, 7, 0)
+  if (payload !== undefined) {
+    buf.set(payload, 7)
   }
   return buf
 }

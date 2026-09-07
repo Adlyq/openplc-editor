@@ -78,13 +78,12 @@ export const RequestSchema = z.discriminatedUnion('kind', [
   /**
    * Force — pinned until unforced; survives the program's own writes.
    *
-   * There is deliberately no soft-write verb. The debug protocol's only
-   * mutation PDU (FC 0x42) carries a force flag, not a three-way op, so a
-   * "write" could only ever be sent as force=0 — which the target reads as an
-   * UNFORCE and which discards the value bytes. The in-process soft write
-   * (`DBGW_OP_WRITE` / `handle_write`) exists for consumers that run inside
-   * the runtime, such as the OPC-UA plugin and retain restore; it has no wire
-   * representation and does not need one.
+   * Soft write (a non-forced "write this value, the program may overwrite it")
+   * is expressible on the wire as force=0 WITH a value payload (FC 0x42), which
+   * the target dispatches to the in-process soft write `DBGW_OP_WRITE`; a
+   * force=0 PDU with no payload remains the UNFORCE/release verb.  The CLI
+   * still exposes only force/unforce; the editor's watch panel uses the
+   * payload form for click-to-edit values.
    */
   z.object({ id: idField, kind: z.literal('force'), name: z.string(), value: z.string() }),
   z.object({ id: idField, kind: z.literal('unforce'), name: z.string() }),

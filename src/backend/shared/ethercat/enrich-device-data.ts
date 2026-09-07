@@ -7,11 +7,11 @@
 
 import type {
   ESIDevice,
-  ESIPdo,
   EtherCATChannelMapping,
+  ModuleSelection,
   PersistedChannelInfo,
+  PersistedModuleSlot,
   PersistedPdo,
-  PersistedPdoEntry,
   SDOConfigurationEntry,
 } from '@root/middleware/shared/ports/esi-types'
 import {
@@ -20,28 +20,20 @@ import {
   isCia402Drive,
 } from '@root/middleware/shared/utils/ethercat'
 
-import { esiTypeToIecType, generateDefaultChannelMappings, pdoToChannels } from './esi-parser'
+import {
+  deriveSlaveType,
+  esiTypeToIecType,
+  generateDefaultChannelMappings,
+  pdoToChannels,
+  persistPdos,
+} from './esi-parser'
+import { buildModuleCatalog, defaultModuleSelections, isModularDevice } from './module-process-image'
 import { extractDefaultSdoConfigurations } from './sdo-config-defaults'
 
-/**
- * Convert ESIPdo[] to PersistedPdo[] format.
- * Preserves all entries including padding for complete PDO layout.
- */
-export function persistPdos(pdos: ESIPdo[]): PersistedPdo[] {
-  return pdos.map((pdo) => ({
-    index: pdo.index,
-    name: pdo.name,
-    entries: pdo.entries.map(
-      (entry): PersistedPdoEntry => ({
-        index: entry.index,
-        subIndex: entry.subIndex,
-        bitLen: entry.bitLen,
-        name: entry.name,
-        dataType: entry.dataType,
-      }),
-    ),
-  }))
-}
+// persistPdos / deriveSlaveType now live in ./esi-parser (leaf module) so the
+// module process-image builder can depend on them without a circular import.
+// Re-exported here to keep existing importers working.
+export { deriveSlaveType, persistPdos }
 
 /**
  * Build persisted channel info from ESIDevice using pdoToChannels.
@@ -65,40 +57,6 @@ export function buildChannelInfo(device: ESIDevice): PersistedChannelInfo[] {
 }
 
 /**
- * Derive slave device type from PDO structure.
- * Uses heuristics based on PDO direction and data sizes.
- */
-export function deriveSlaveType(device: ESIDevice): string {
-  const hasNonPaddingEntry = (pdos: ESIPdo[]): boolean =>
-    pdos.some((pdo) => pdo.entries.some((e) => e.name !== 'Padding' && e.index !== '0x0000'))
-
-  const allBitSized = (pdos: ESIPdo[]): boolean =>
-    pdos.every((pdo) =>
-      pdo.entries.filter((e) => e.name !== 'Padding' && e.index !== '0x0000').every((e) => e.bitLen === 1),
-    )
-
-  const hasTxData = hasNonPaddingEntry(device.txPdo)
-  const hasRxData = hasNonPaddingEntry(device.rxPdo)
-
-  if (!hasTxData && !hasRxData) return 'coupler'
-
-  const txAllBit = hasTxData && allBitSized(device.txPdo)
-  const rxAllBit = hasRxData && allBitSized(device.rxPdo)
-
-  if (hasTxData && !hasRxData) {
-    return txAllBit ? 'digital_input' : 'analog_input'
-  }
-
-  if (hasRxData && !hasTxData) {
-    return rxAllBit ? 'digital_output' : 'analog_output'
-  }
-
-  // Both directions
-  if (txAllBit && rxAllBit) return 'digital_io'
-  return 'analog_io'
-}
-
-/**
  * Enrich device data by extracting all persistable info from a full ESIDevice.
  * Returns fields to spread into ConfiguredEtherCATDevice.
  *
@@ -119,7 +77,30 @@ export function enrichDeviceData(
   sdoConfigurations?: SDOConfigurationEntry[]
   channelMappings: EtherCATChannelMapping[]
   cia402?: Cia402AxisConfig
+  moduleSlots?: PersistedModuleSlot[]
+  moduleSelections?: ModuleSelection[]
+  moduleSdoConfigurations?: SDOConfigurationEntry[]
 } {
+  // Modular (Slot/Module) slaves have no device-level process image: the
+  // channel set comes entirely from the per-slot module selection.  Every
+  // slot defaults to NO-Slave (empty port); the operator assigns the real
+  // modules in the device's Module Selection tab.
+  if (isModularDevice(device)) {
+    const moduleSlots = buildModuleCatalog(device)
+    return {
+      channelInfo: [],
+      rxPdos: [],
+      txPdos: [],
+      slaveType: 'coupler',
+      sdoConfigurations: device.coeObjects?.length ? extractDefaultSdoConfigurations(device.coeObjects) : undefined,
+      channelMappings: [],
+      moduleSlots,
+      moduleSelections: defaultModuleSelections(moduleSlots),
+      moduleSdoConfigurations: [],
+      cia402: undefined,
+    }
+  }
+
   return {
     channelInfo: buildChannelInfo(device),
     rxPdos: persistPdos(device.rxPdo),

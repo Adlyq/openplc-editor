@@ -188,6 +188,12 @@ export type EnrichDeviceData = {
   txPdos?: PersistedPdo[]
   slaveType?: string
   sdoConfigurations?: SDOConfigurationEntry[]
+  channelMappings?: EtherCATChannelMapping[]
+  /** Modular slot catalog + selections (written together by the module
+   *  picker / enrich of a modular slave). */
+  moduleSlots?: PersistedModuleSlot[]
+  moduleSelections?: ModuleSelection[]
+  moduleSdoConfigurations?: SDOConfigurationEntry[]
 }
 
 // ===================== DEVICE =====================
@@ -212,12 +218,121 @@ export interface ESIDevice {
   rxPdo: ESIPdo[]
   /** TxPDOs (slave to master) */
   txPdo: ESIPdo[]
+  /** Modular slot layout (present when this is a Slot/Module based slave) */
+  slots?: ESIDeviceSlot[]
+  /** Modular slot index increments (present when @see slots is present) */
+  slotLayout?: ESIDeviceSlotLayout
+  /** Module catalog available to this device's slots (present when modular) */
+  modules?: ESIDeviceModule[]
   /** CoE objects (optional) */
   coeObjects?: ESICoEObject[]
   /** Device image URL (optional) */
   imageUrl?: string
   /** Additional description */
   description?: string
+}
+
+// ===================== MODULAR (SLOT / MODULE) =====================
+
+/**
+ * A module definition inside a modular ESI file.
+ *
+ * Modular slaves (e.g. an IO-Link master with per-port process data) declare
+ * a catalog of modules under `<Descriptions>/<Modules>`.  Each module carries
+ * its own RxPdo/TxPdo whose `<Index>`/entry `<Index>` are `DependOnSlot` base
+ * values; the effective object index is `base + slotIndex * increment`.
+ */
+export interface ESIDeviceModule {
+  /** ModuleIdent (hex, e.g. "0x2C01" for "IOL_I/O_02/02 byte") */
+  ident: string
+  /** Module type/name (e.g. "IOL_I/O_02/02 byte") */
+  name: string
+  /** RxPDOs (master to slave outputs) with base (un-offset) indexes */
+  rxPdos: ESIPdo[]
+  /** TxPDOs (slave to master inputs) with base (un-offset) indexes */
+  txPdos: ESIPdo[]
+  /** CoE activation commands the master must write at PRE-OP so the module
+   *  actually provides process data (PD lengths, ISDU config, ...). */
+  initCmds?: ESIModuleInitCmd[]
+}
+
+/**
+ * A CoE InitCmd of a module (`<Module><Mailbox><CoE><InitCmd>`).
+ * The master writes these to the slave during PRE-OP; without them the module
+ * stays inactive and the slave reports no process data.
+ */
+export interface ESIModuleInitCmd {
+  /** Base object index (DependOnSlot) — effective index adds the slot offset */
+  index: string
+  /** Sub-index (hex string) */
+  subIndex: string
+  /** Little-endian data bytes as hex (e.g. "0200" = 0x0002) */
+  data: string
+  /** Human-readable comment from the ESI */
+  comment: string
+}
+
+/**
+ * A slot of a modular slave.
+ *
+ * Each `<Slot>` under `<Device>/<Slots>` names the module identifiers that may
+ * be populated there (e.g. one per IO-Link port).
+ */
+export interface ESIDeviceSlot {
+  /** Stable slot identifier (its name, e.g. "IO-Link Port 1 Primary L1 Device - A") */
+  id: string
+  /** Display name of the slot */
+  name: string
+  /** Module identifiers that may be placed in this slot */
+  moduleIdents: string[]
+}
+
+/**
+ * PDO/object index increments applied per populated slot.
+ * Mirrors the `<Slots SlotPdoIncrement=... SlotIndexIncrement=...>` attributes.
+ */
+export interface ESIDeviceSlotLayout {
+  /** PDO index increment per slot (e.g. 1 -> 0x1690, 0x1691, ...) */
+  pdoIncrement: number
+  /** Object (entry) index increment per slot (e.g. 0x10 -> 0x7000, 0x7010, ...) */
+  indexIncrement: number
+}
+
+/**
+ * Persisted module option for a configured device slot.
+ * Compact catalog stored in project.json so the UI and the module-selection
+ * gate work without re-reading the ESI file.
+ */
+export interface PersistedModuleSlotOption {
+  /** ModuleIdent (hex, e.g. "0x2C01") */
+  ident: string
+  /** Module display name */
+  name: string
+  /** Total input bytes the module contributes when selected */
+  inputBytes: number
+  /** Total output bytes the module contributes when selected */
+  outputBytes: number
+}
+
+/**
+ * Persisted slot of a configured modular device.
+ */
+export interface PersistedModuleSlot {
+  /** Slot name (matches ESIDeviceSlot.id) */
+  name: string
+  /** Modules the user may choose for this slot */
+  options: PersistedModuleSlotOption[]
+}
+
+/**
+ * One module selection: the module placed in a specific slot.
+ * An empty selections list means the device is not yet configured.
+ */
+export interface ModuleSelection {
+  /** Slot name (matches PersistedModuleSlot.name) */
+  slotName: string
+  /** Selected ModuleIdent, or "0x0000" (NO-Slave) for an empty slot */
+  moduleIdent: string
 }
 
 // ===================== GROUP =====================
@@ -495,6 +610,16 @@ export interface ConfiguredEtherCATDevice {
   sdoConfigurations?: SDOConfigurationEntry[]
   /** CiA 402 SoftMotion axis configuration (present when recognized as a drive) */
   cia402?: Cia402AxisConfig
+  /** Modular slave slot catalog (present when the ESI device is Slot/Module based).
+   *  When present the device MUST have a module selection before it can be
+   *  compiled: no selection means the process image is empty by design. */
+  moduleSlots?: PersistedModuleSlot[]
+  /** Per-slot module selections (empty = unconfigured / requires configuration) */
+  moduleSelections?: ModuleSelection[]
+  /** CoE activation SDOs derived from the selected modules' InitCmds.  They
+   *  are exported AFTER the device-level startup SDOs so the activation
+   *  values win (the device defaults are all zeros). */
+  moduleSdoConfigurations?: SDOConfigurationEntry[]
 }
 
 /**

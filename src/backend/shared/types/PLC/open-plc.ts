@@ -635,6 +635,23 @@ const EtherCATChannelMappingSchema = z.object({
   alias: z.string().optional(),
 })
 
+const PersistedModuleSlotOptionSchema = z.object({
+  ident: z.string(),
+  name: z.string(),
+  inputBytes: z.number(),
+  outputBytes: z.number(),
+})
+
+const PersistedModuleSlotSchema = z.object({
+  name: z.string(),
+  options: z.array(PersistedModuleSlotOptionSchema),
+})
+
+const ModuleSelectionSchema = z.object({
+  slotName: z.string(),
+  moduleIdent: z.string(),
+})
+
 const ESIDeviceRefSchema = z.object({
   repositoryItemId: z.string(),
   deviceIndex: z.number(),
@@ -751,6 +768,12 @@ const ConfiguredEtherCATDeviceSchema = z.object({
   sdoConfigurations: z.array(SDOConfigurationEntrySchema).optional(),
   /** Present when this drive is a CiA 402 SoftMotion axis (see schema above). */
   cia402: Cia402AxisConfigSchema.optional(),
+  /** Modular slave slot catalog + selections (present when the device is
+   *  Slot/Module based).  A modular device with an empty/missing selection is
+   *  not compilable until the operator assigns modules to every slot. */
+  moduleSlots: z.array(PersistedModuleSlotSchema).optional(),
+  moduleSelections: z.array(ModuleSelectionSchema).optional(),
+  moduleSdoConfigurations: z.array(SDOConfigurationEntrySchema).optional(),
 })
 
 const EtherCATMasterConfigSchema = z.object({

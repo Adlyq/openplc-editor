@@ -11,10 +11,14 @@ import type {
   ESICoEObject,
   ESICoESubItem,
   ESIDevice,
+  ESIDeviceModule,
+  ESIDeviceSlot,
+  ESIDeviceSlotLayout,
   ESIDeviceSummary,
   ESIDeviceType,
   ESIFMMU,
   ESIGroup,
+  ESIModuleInitCmd,
   ESIPdo,
   ESIPdoEntry,
   ESISyncManager,
@@ -32,6 +36,15 @@ function parseHexValue(value: string | number | undefined | null): string {
   const str = String(value)
   const cleaned = str.replace(/#x/gi, '0x')
   return cleaned.startsWith('0x') ? cleaned : `0x${cleaned}`
+}
+
+/**
+ * Parse a hex ModuleIdent into a normalized, lower-case "0x..." form.
+ * Module idents are only ever compared for equality and looked up by value,
+ * so a canonical form avoids '#x2C01' vs '0x2c01' mismatches.
+ */
+function parseModuleIdent(value: string | undefined | null): string {
+  return parseHexValue(value).toLowerCase()
 }
 
 /**
@@ -74,10 +87,29 @@ function createParser(): XMLParser {
     attributeNamePrefix: '@_',
     textNodeName: '#text',
     parseAttributeValue: false,
+    // Keep every text node a string.  fast-xml-parser otherwise coerces
+    // numeric-looking values ("0200") to numbers, destroying leading-zero
+    // fidelity needed for hex payloads like module CoE InitCmd <Data>.
+    parseTagValue: false,
     trimValues: true,
     isArray: (tagName: string) => {
       // Tags that can appear multiple times and should always be arrays
-      const arrayTags = ['Device', 'Group', 'RxPdo', 'TxPdo', 'Entry', 'Fmmu', 'Sm', 'Object', 'SubItem', 'DataType']
+      const arrayTags = [
+        'Device',
+        'Group',
+        'RxPdo',
+        'TxPdo',
+        'Entry',
+        'Fmmu',
+        'Sm',
+        'Object',
+        'SubItem',
+        'DataType',
+        'Module',
+        'Slot',
+        'ModuleIdent',
+        'InitCmd',
+      ]
       return arrayTags.includes(tagName)
     },
   })
@@ -298,8 +330,12 @@ export function parseESIDeviceFull(xmlString: string, deviceIndex: number): ESID
       return { success: false, error: `Device index ${deviceIndex} out of range (0-${deviceElements.length - 1})` }
     }
 
+    // Modular catalog lives once per file, next to <Devices>, and is shared by
+    // every <Device> whose <Slots> reference its ModuleIdents.
+    const modulesCatalog = parseModuleCatalog(descriptions)
+
     const deviceEl = deviceElements[deviceIndex]
-    const device = parseFullDevice(deviceEl, groups)
+    const device = parseFullDevice(deviceEl, groups, modulesCatalog)
 
     return { success: true, device }
   } catch (error) {
@@ -518,10 +554,123 @@ function parseCoEDictionary(deviceEl: Record<string, unknown>): ESICoEObject[] |
   return coeObjects.length > 0 ? coeObjects : undefined
 }
 
+// ===================== MODULAR (SLOT / MODULE) PARSING =====================
+
+/**
+ * Parse a hex integer attribute/value such as "#x10", "0x10" or "10".
+ */
+function parseHexIntValue(value: unknown): number {
+  if (value === undefined || value === null) return 0
+  if (typeof value === 'number') return value
+  if (typeof value !== 'string') return 0
+  const str = value.trim().replace(/^#x/i, '0x')
+  const cleaned = str.replace(/^0x/i, '')
+  if (!/^[0-9a-f]+$/i.test(cleaned)) {
+    const parsed = Number.parseInt(str, 10)
+    return Number.isNaN(parsed) ? 0 : parsed
+  }
+  return Number.parseInt(cleaned, 16)
+}
+
+/**
+ * Parse the `<Descriptions>/<Modules>` catalog of a modular ESI file.
+ * Each module carries its own RxPdo/TxPdo with base (DependOnSlot) indexes.
+ */
+function parseModuleCatalog(descriptions: Record<string, unknown>): ESIDeviceModule[] {
+  const modulesObj = descriptions['Modules'] as Record<string, unknown> | undefined
+  if (!modulesObj) return []
+
+  const moduleElements = ensureArray(modulesObj['Module'] as Record<string, unknown> | Record<string, unknown>[])
+  const modules: ESIDeviceModule[] = []
+
+  for (const moduleEl of moduleElements) {
+    const typeEl = moduleEl['Type'] as Record<string, unknown> | string | undefined
+    let ident = '0x0'
+    let name = 'Unnamed Module'
+    if (typeEl && typeof typeEl === 'object') {
+      ident = parseModuleIdent(typeEl['@_ModuleIdent'] as string | undefined)
+      name = getTextValue(typeEl['#text'] ?? typeEl)
+    } else {
+      name = getTextValue(typeEl) || name
+    }
+
+    const rxPdos: ESIPdo[] = []
+    const rxElements = ensureArray(moduleEl['RxPdo'] as Record<string, unknown> | Record<string, unknown>[])
+    for (const pdoEl of rxElements) {
+      rxPdos.push(parseFullPdo(pdoEl))
+    }
+
+    const txPdos: ESIPdo[] = []
+    const txElements = ensureArray(moduleEl['TxPdo'] as Record<string, unknown> | Record<string, unknown>[])
+    for (const pdoEl of txElements) {
+      txPdos.push(parseFullPdo(pdoEl))
+    }
+
+    // CoE activation commands (<Mailbox><CoE><InitCmd>).  Data is stored as
+    // raw LE hex ("0200") — the index/sub-index are DependOnSlot base values
+    // that the module process-image builder offsets per slot.
+    const initCmds: ESIModuleInitCmd[] = []
+    const mailbox = moduleEl['Mailbox'] as Record<string, unknown> | undefined
+    const coe = mailbox?.['CoE'] as Record<string, unknown> | undefined
+    if (coe) {
+      const cmdElements = ensureArray(coe['InitCmd'] as Record<string, unknown> | Record<string, unknown>[])
+      for (const cmd of cmdElements) {
+        const index = getTextValue(cmd['Index'])
+        if (!index) continue
+        initCmds.push({
+          index: parseHexValue(index),
+          subIndex: parseHexValue(getTextValue(cmd['SubIndex'])),
+          data: getTextValue(cmd['Data']).replace(/\s+/g, ''),
+          comment: getTextValue(cmd['Comment']),
+        })
+      }
+    }
+
+    modules.push({ ident, name, rxPdos, txPdos, initCmds: initCmds.length > 0 ? initCmds : undefined })
+  }
+
+  return modules
+}
+
+/**
+ * Parse a modular slave's `<Slots>` section: slot list + index increments.
+ */
+function parseDeviceSlots(deviceEl: Record<string, unknown>): {
+  slots: ESIDeviceSlot[]
+  layout: ESIDeviceSlotLayout
+} {
+  const slotsEl = deviceEl['Slots'] as Record<string, unknown> | undefined
+  if (!slotsEl) return { slots: [], layout: { pdoIncrement: 0, indexIncrement: 0 } }
+
+  const slotElements = ensureArray(slotsEl['Slot'] as Record<string, unknown> | Record<string, unknown>[])
+
+  const slots: ESIDeviceSlot[] = []
+  for (const slotEl of slotElements) {
+    const name = getTextValue(slotEl['Name'])
+    const moduleIdentElements = ensureArray(
+      slotEl['ModuleIdent'] as Record<string, unknown> | string | (Record<string, unknown> | string)[],
+    )
+    const moduleIdents = moduleIdentElements.map((m) => parseModuleIdent(getTextValue(m))).filter((id) => id !== '0x0')
+    slots.push({ id: name || `Slot ${slots.length + 1}`, name: name || `Slot ${slots.length + 1}`, moduleIdents })
+  }
+
+  return {
+    slots,
+    layout: {
+      pdoIncrement: parseHexIntValue(slotsEl['@_SlotPdoIncrement']),
+      indexIncrement: parseHexIntValue(slotsEl['@_SlotIndexIncrement']),
+    },
+  }
+}
+
 /**
  * Parse a complete ESIDevice from a parsed device element
  */
-function parseFullDevice(deviceEl: Record<string, unknown>, groups: ESIGroup[]): ESIDevice {
+function parseFullDevice(
+  deviceEl: Record<string, unknown>,
+  groups: ESIGroup[],
+  modulesCatalog: ESIDeviceModule[],
+): ESIDevice {
   // Parse Type
   const typeEl = deviceEl['Type'] as Record<string, unknown> | string | undefined
   let type: ESIDeviceType
@@ -593,6 +742,12 @@ function parseFullDevice(deviceEl: Record<string, unknown>, groups: ESIGroup[]):
   // Parse CoE Object Dictionary
   const coeObjects = parseCoEDictionary(deviceEl)
 
+  // Modular (Slot/Module) slaves: attach the referenced module catalog and the
+  // slot layout so callers can build the per-slot process image.
+  const { slots, layout } = parseDeviceSlots(deviceEl)
+  const referencedIdents = new Set(slots.flatMap((s) => s.moduleIdents))
+  const modules = modulesCatalog.filter((m) => referencedIdents.has(m.ident))
+
   return {
     type,
     name: getTextValue(deviceEl['Name']) || 'Unknown Device',
@@ -602,6 +757,9 @@ function parseFullDevice(deviceEl: Record<string, unknown>, groups: ESIGroup[]):
     syncManagers,
     rxPdo,
     txPdo,
+    slots: slots.length > 0 ? slots : undefined,
+    slotLayout: slots.length > 0 ? layout : undefined,
+    modules: modules.length > 0 ? modules : undefined,
     coeObjects,
     description: getTextValue(deviceEl['Comment']) || undefined,
   }
@@ -622,7 +780,7 @@ function parseFullPdo(pdoEl: Record<string, unknown>): ESIPdo {
   }
 
   return {
-    index: parseHexValue(pdoEl['Index'] as string | undefined),
+    index: parseHexValue(getTextValue(pdoEl['Index'])),
     name: getTextValue(pdoEl['Name']) || 'Unnamed PDO',
     fixed: getTextValue(pdoEl['@_Fixed']).toLowerCase() === 'true',
     mandatory: getTextValue(pdoEl['@_Mandatory']).toLowerCase() === 'true',

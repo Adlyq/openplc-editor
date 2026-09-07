@@ -57,11 +57,16 @@ import {
 import { useDeviceConnectionMonitor } from '../hooks/use-device-connection-monitor'
 import { useDevicePlcState } from '../hooks/use-device-plc-state'
 import { useRuntimePolling } from '../hooks/use-runtime-polling'
-import { forceDebugVariable, releaseDebugVariable } from '../services/debug-force-variable'
+import {
+  forceDebugVariable,
+  forceThenReleaseDebugVariable,
+  releaseDebugVariable,
+} from '../services/debug-force-variable'
 import { useOpenPLCStore } from '../store'
 import { cn } from '../utils/cn'
 import { buildGlobalCompositeKey, GLOBAL_CONFIG_NAME } from '../utils/debug-variable-finder'
 import { toast } from '../utils/toast'
+import { encodeForceValue, isForcedValueHigh } from '../utils/variable-sizes'
 
 const WorkspaceScreen = () => {
   const capabilities = useCapabilities()
@@ -265,30 +270,82 @@ const WorkspaceScreen = () => {
     return new Map(Array.from(debugVariableTree.entries()).filter(([key]) => allKeys.has(key)))
   }, [allDebugVariables, debugForcedVariables, debugVariableTree])
 
-  // Force variable handler via DebuggerPort
-  const handleForceVariable = useCallback(
+  const boolTextIsOn = (text?: string): boolean => (text ?? '').toUpperCase() === 'TRUE' || text === '1'
+
+  const handleWriteVariable = useCallback(
+    async (compositeKey: string, variableType: string, value: string | boolean, lookupKey?: string): Promise<void> => {
+      const variableIndex = debugVariableIndexes.get(lookupKey ?? compositeKey)
+      if (variableIndex === undefined) {
+        toast({
+          title: 'Cannot write value',
+          description: `'${compositeKey}' is not in the debug index — save, compile and reconnect`,
+          variant: 'fail',
+        })
+        return
+      }
+      if (!debuggerPort.isConnected()) {
+        toast({ title: 'Cannot write value', description: 'Debugger is not connected', variant: 'fail' })
+        return
+      }
+
+      let buffer: Uint8Array
+      try {
+        buffer = typeof value === 'boolean' ? new Uint8Array([value ? 1 : 0]) : encodeForceValue(value, variableType)
+      } catch (error) {
+        toast({
+          title: 'Cannot write value',
+          description: error instanceof Error ? error.message : String(error),
+          variant: 'fail',
+        })
+        return
+      }
+      const ok = await forceThenReleaseDebugVariable(debuggerPort, compositeKey, variableIndex, buffer, variableType)
+      if (!ok) {
+        toast({ title: 'Value write failed', description: 'The debugger rejected the write.', variant: 'fail' })
+      }
+    },
+    [debugVariableIndexes, debuggerPort],
+  )
+
+  const handleToggleForce = useCallback(
     async (
       compositeKey: string,
       variableType: string,
-      value?: boolean,
-      valueBuffer?: Uint8Array,
+      forceOn: boolean,
       lookupKey?: string,
+      currentValue?: string,
     ): Promise<void> => {
-      const keyForIndexLookup = lookupKey ?? compositeKey
-      const variableIndex = debugVariableIndexes.get(keyForIndexLookup)
-      if (variableIndex === undefined) return
-
-      if (!debuggerPort.isConnected()) return
-
-      if (value === undefined && valueBuffer === undefined) {
-        await releaseDebugVariable(debuggerPort, compositeKey, variableIndex)
-      } else {
-        const buffer = valueBuffer ?? new Uint8Array([value ? 1 : 0])
-        // Pass variableType so the wire-endianness swap inside the
-        // service knows whether to skip swapping (BOOL one-byte
-        // paths, STRING / WSTRING) — see services/debug-force-variable.
-        await forceDebugVariable(debuggerPort, compositeKey, variableIndex, buffer, value ?? true, variableType)
+      const variableIndex = debugVariableIndexes.get(lookupKey ?? compositeKey)
+      if (variableIndex === undefined) {
+        toast({
+          title: 'Cannot change force',
+          description: `'${compositeKey}' is not in the debug index — save, compile and reconnect`,
+          variant: 'fail',
+        })
+        return
       }
+      if (!debuggerPort.isConnected()) {
+        toast({ title: 'Cannot change force', description: 'Debugger is not connected', variant: 'fail' })
+        return
+      }
+
+      if (!forceOn) {
+        await releaseDebugVariable(debuggerPort, compositeKey, variableIndex)
+        return
+      }
+
+      const isBool = variableType.toUpperCase() === 'BOOL'
+      const text: string =
+        currentValue && currentValue !== '-' && currentValue.length > 0 ? currentValue : isBool ? 'TRUE' : '1'
+
+      let buffer: Uint8Array
+      try {
+        buffer = isBool ? new Uint8Array([boolTextIsOn(text) ? 1 : 0]) : encodeForceValue(text, variableType)
+      } catch {
+        buffer = isBool ? new Uint8Array([1]) : encodeForceValue('1', variableType)
+      }
+      const high = isBool ? boolTextIsOn(text) : isForcedValueHigh(text)
+      await forceDebugVariable(debuggerPort, compositeKey, variableIndex, buffer, high, variableType)
     },
     [debugVariableIndexes, debuggerPort],
   )
@@ -841,7 +898,12 @@ const WorkspaceScreen = () => {
                                 debugExpandedNodes={debugExpandedNodes}
                                 onToggleExpandedNode={toggleDebugExpandedNode}
                                 isDebuggerVisible={isDebuggerVisible}
-                                onForceVariable={handleForceVariable}
+                                onWriteValue={(key, type, value, lookupKey) =>
+                                  void handleWriteVariable(key, type, value, lookupKey)
+                                }
+                                onToggleForce={(key, type, forceOn, lookupKey, value) =>
+                                  void handleToggleForce(key, type, forceOn, lookupKey, value)
+                                }
                               />
                             </ResizablePanel>
                             <ResizableHandle className='w-2 bg-transparent' />

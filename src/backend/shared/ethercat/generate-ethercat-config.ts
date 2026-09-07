@@ -239,6 +239,9 @@ function buildSlave(device: ConfiguredEtherCATDevice, index: number): RuntimeSla
   const channels = device.channelInfo ? buildChannels(device.channelInfo, device.channelMappings) : []
   const rxPdos = device.rxPdos ? convertPdos(device.rxPdos) : []
   const txPdos = device.txPdos ? convertPdos(device.txPdos) : []
+  // Module activation SDOs are appended AFTER the device-level startup SDOs
+  // (whose exported values default to zero) so the activation values win.
+  const sdoConfigurations = [...(device.sdoConfigurations ?? []), ...(device.moduleSdoConfigurations ?? [])]
 
   const cfg = device.config
 
@@ -280,7 +283,7 @@ function buildSlave(device: ConfiguredEtherCATDevice, index: number): RuntimeSla
       },
     },
     channels,
-    sdo_configurations: buildSdoConfigurations(device.sdoConfigurations),
+    sdo_configurations: buildSdoConfigurations(sdoConfigurations),
     rx_pdos: rxPdos,
     tx_pdos: txPdos,
   }

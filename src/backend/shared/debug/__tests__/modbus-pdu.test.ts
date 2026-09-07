@@ -174,16 +174,26 @@ describe('buildSetVariableRequest / parseSetVariableResponse', () => {
     expect(buf[8]).toBe(0xfe)
   })
 
-  it('builds release-force (force=false) with single zero-byte payload', () => {
+  it('builds release-force (force=false, no payload) with zero data length', () => {
     // packed = (arr=0x00 << 16) | elem=0x0010 = 0x0010
     const buf = buildSetVariableRequest(0x0010, false)
+    expect(buf).toHaveLength(7)
     expect(buf[1]).toBe(0x00) // arr
     expect(buf[2]).toBe(0x00) // elem high
     expect(buf[3]).toBe(0x10) // elem low
     expect(buf[4]).toBe(0) // force flag off
+    expect(buf[5]).toBe(0x00) // dataLen high
+    expect(buf[6]).toBe(0x00) // dataLen low = 0 (release, no soft-write payload)
+  })
+
+  it('builds soft-write (force=false) with the value payload', () => {
+    const buf = buildSetVariableRequest(0x0010, false, new Uint8Array([0xaa, 0x00]))
+    expect(buf).toHaveLength(7 + 2)
+    expect(buf[4]).toBe(0) // force flag off
     expect(buf[5]).toBe(0x00)
-    expect(buf[6]).toBe(0x01) // dataLen = 1
-    expect(buf[7]).toBe(0x00) // payload byte
+    expect(buf[6]).toBe(0x02) // dataLen = payload length
+    expect(buf[7]).toBe(0xaa)
+    expect(buf[8]).toBe(0x00)
   })
 
   it('parses success', () => {

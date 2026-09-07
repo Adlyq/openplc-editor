@@ -1,5 +1,10 @@
 import { enrichDeviceData } from '@root/backend/shared/ethercat/enrich-device-data'
-import { generateDefaultChannelMappings, pdoToChannels } from '@root/backend/shared/ethercat/esi-parser'
+import {
+  generateDefaultChannelMappings,
+  pdoToChannels,
+  persistedPdosToChannels,
+} from '@root/backend/shared/ethercat/esi-parser'
+import { buildModuleCatalog, defaultModuleSelections } from '@root/backend/shared/ethercat/module-process-image'
 import { extractDefaultSdoConfigurations } from '@root/backend/shared/ethercat/sdo-config-defaults'
 import { toast } from '@root/frontend/components/_features/[app]/toast/use-toast'
 import { useOpenPLCStore } from '@root/frontend/store'
@@ -19,7 +24,7 @@ import {
   validateAliasEdit,
 } from '@root/middleware/shared/utils/iec-address'
 import { resolveTargetCapabilities } from '@root/middleware/shared/utils/target-capabilities'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 type UseDeviceConfigurationParams = {
   device: ConfiguredEtherCATDevice
@@ -50,7 +55,7 @@ export function useDeviceConfiguration({
   enabled = true,
 }: UseDeviceConfigurationParams): UseDeviceConfigurationResult {
   const esiPort = useEsi()
-  const [channels, setChannels] = useState<ESIChannel[]>([])
+  const [rawChannels, setRawChannels] = useState<ESIChannel[]>([])
   const [coeObjects, setCoeObjects] = useState<ESICoEObject[] | undefined>(undefined)
   const [isLoadingChannels, setIsLoadingChannels] = useState(false)
   const [channelLoadError, setChannelLoadError] = useState<string | null>(null)
@@ -79,12 +84,38 @@ export function useDeviceConfiguration({
 
         if (result.success && result.device) {
           const deviceChannels = pdoToChannels(result.device)
-          setChannels(deviceChannels)
+          // Prefer the persisted PDOs: after a module selection (or any
+          // previous enrich) the device's real process image lives there,
+          // while a modular slave's device-level PDOs are empty by design.
+          const storedChannels =
+            (device.rxPdos?.length ?? 0) > 0 || (device.txPdos?.length ?? 0) > 0
+              ? persistedPdosToChannels(device.rxPdos ?? [], device.txPdos ?? [])
+              : deviceChannels
+          setRawChannels(storedChannels)
           setCoeObjects(result.device.coeObjects)
           fullDeviceLoadedRef.current = true
 
-          if (device.channelMappings.length === 0 && deviceChannels.length > 0) {
-            onUpdateChannelMappingsRef.current(generateDefaultChannelMappings(deviceChannels, externalAddresses))
+          // Legacy migration: a Slot/Module based slave persisted BEFORE
+          // module support has no `moduleSlots` — its old flat channel list
+          // is meaningless until modules are assigned.  Default every port to
+          // NO-Slave so the device opens as "complete but empty"; the Module
+          // Selection tab drives the rebuild for the ports actually fitted.
+          if ((result.device.slots?.length ?? 0) > 0 && !device.moduleSlots) {
+            setRawChannels([])
+            const moduleSlots = buildModuleCatalog(result.device)
+            onEnrichDeviceRef.current({
+              channelInfo: [],
+              rxPdos: [],
+              txPdos: [],
+              slaveType: device.slaveType ?? 'coupler',
+              channelMappings: [],
+              moduleSlots,
+              moduleSelections: defaultModuleSelections(moduleSlots),
+            })
+          }
+
+          if (device.channelMappings.length === 0 && storedChannels.length > 0) {
+            onUpdateChannelMappingsRef.current(generateDefaultChannelMappings(storedChannels, externalAddresses))
           }
 
           if (!device.channelInfo || !device.rxPdos || !device.txPdos) {
@@ -111,6 +142,19 @@ export function useDeviceConfiguration({
 
     void loadFullDevice()
   }, [enabled, projectPath, device?.esiDeviceRef?.repositoryItemId, device?.esiDeviceRef?.deviceIndex])
+
+  // The channel list follows the device's *persisted* process image: once a
+  // modular slave has a module selection (or a flat device has been enriched)
+  // the PDOs live in device.rxPdos/txPdos, and a modular slave's device-level
+  // PDOs are empty by design.  Re-derive from the persisted PDOs whenever
+  // they change so the Channel Mappings tab tracks module-selection edits.
+  const channels = useMemo(
+    () =>
+      (device?.rxPdos?.length ?? 0) > 0 || (device?.txPdos?.length ?? 0) > 0
+        ? persistedPdosToChannels(device?.rxPdos ?? [], device?.txPdos ?? [])
+        : rawChannels,
+    [device?.rxPdos, device?.txPdos, rawChannels],
+  )
 
   const handleAliasChange = useCallback(
     (channelId: string, alias: string) => {

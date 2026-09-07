@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<EtherCATInfo Version="1.6">
+  <Vendor>
+    <Id>#x00000C5C</Id>
+    <Name>Senmun Test</Name>
+  </Vendor>
+  <Descriptions>
+    <Groups>
+      <Group>
+        <Type>IO-Link Master</Type>
+        <Name>IO-Link Master</Name>
+      </Group>
+    </Groups>
+    <Devices>
+      <Device Physics="YY">
+        <Type ProductCode="#x00A0000902" RevisionNo="#x00000003">IL_EC_4A4BP_Test</Type>
+        <Name>IL-EC-4A4BP Modular Slave</Name>
+        <GroupType>IO-Link Master</GroupType>
+        <Fmmu>Inputs</Fmmu>
+        <Fmmu>Outputs</Fmmu>
+        <Sm StartAddress="#x1000" ControlByte="#x26" DefaultSize="128" Enable="1">MbxOut</Sm>
+        <Sm StartAddress="#x1080" ControlByte="#x22" DefaultSize="128" Enable="1">MbxIn</Sm>
+        <Slots SlotPdoIncrement="#x1" SlotIndexIncrement="#x10">
+          <Slot MinInstances="1" MaxInstances="1">
+            <Name>IO-Link Port 1 Primary L1 Device - A</Name>
+            <ModuleIdent>#x0000</ModuleIdent>
+            <ModuleIdent>#x2C01</ModuleIdent>
+          </Slot>
+          <Slot MinInstances="1" MaxInstances="1">
+            <Name>IO-Link Port 2 Primary L1 Device - A</Name>
+            <ModuleIdent>#x0000</ModuleIdent>
+            <ModuleIdent>#x2C01</ModuleIdent>
+          </Slot>
+        </Slots>
+      </Device>
+    </Devices>
+    <Modules>
+      <Module>
+        <Type ModuleIdent="#x0000">NO-Slave-Module</Type>
+        <Name>NO-Slave-Module</Name>
+      </Module>
+      <Module>
+        <Type ModuleIdent="#x2C01">IOL_I/O_02/02 byte</Type>
+        <Name>IO-Link 2 Byte Process Data Input / 2 Byte Process Data Output</Name>
+        <RxPdo Sm="2">
+          <Index DependOnSlot="true">#x1690</Index>
+          <Name>PD Out</Name>
+          <Entry>
+            <Index DependOnSlot="true">#x7000</Index>
+            <SubIndex>1</SubIndex>
+            <BitLen>16</BitLen>
+            <Name>Output Uint 0</Name>
+            <DataType>UINT</DataType>
+          </Entry>
+        </RxPdo>
+        <TxPdo Sm="3">
+          <Index DependOnSlot="true">#x1A90</Index>
+          <Name>PD In</Name>
+          <Entry>
+            <Index DependOnSlot="true">#x6000</Index>
+            <SubIndex>1</SubIndex>
+            <BitLen>16</BitLen>
+            <Name>Input Uint 0</Name>
+            <DataType>UINT</DataType>
+          </Entry>
+        </TxPdo>
+        <Mailbox>
+          <CoE>
+            <InitCmd>
+              <Transition>PS</Transition>
+              <Index DependOnSlot="true">#x8000</Index>
+              <SubIndex>#x24</SubIndex>
+              <Data>0200</Data>
+              <Comment>Set Process Data In Length</Comment>
+            </InitCmd>
+            <InitCmd>
+              <Transition>PS</Transition>
+              <Index DependOnSlot="true">#x8000</Index>
+              <SubIndex>#x25</SubIndex>
+              <Data>0200</Data>
+              <Comment>Set Process Data Out Length</Comment>
+            </InitCmd>
+            <InitCmd>
+              <Transition>PS</Transition>
+              <Index DependOnSlot="true">#x2002</Index>
+              <SubIndex>#x04</SubIndex>
+              <Data>0000000000000000</Data>
+              <Comment>ISDU Data buffer</Comment>
+            </InitCmd>
+          </CoE>
+        </Mailbox>
+      </Module>
+    </Modules>
+  </Descriptions>
+</EtherCATInfo>

@@ -51,6 +51,34 @@ export async function forceDebugVariable(
 }
 
 /**
+ * Soft-write a variable by force-writing the value and immediately releasing
+ * it.  Net effect: the value is applied once, no force remains, so the PLC
+ * program may overwrite it from the next cycle on (the release is processed
+ * in the same journal drain, seeding the slot without leaving it pinned).
+ */
+export async function forceThenReleaseDebugVariable(
+  debuggerPort: DebuggerPort,
+  _compositeKey: string,
+  debugIndex: number | undefined,
+  valueBuffer: Uint8Array,
+  typeName?: string,
+): Promise<boolean> {
+  if (debugIndex === undefined) return false
+
+  const { debugTargetEndian } = useOpenPLCStore.getState().workspace
+  if (typeName !== undefined) {
+    applySwapToVariableBytes(valueBuffer, 0, valueBuffer.length, typeName, debugTargetEndian)
+  } else if (debugTargetEndian === 'be' && valueBuffer.length > 1) {
+    applySwapToVariableBytes(valueBuffer, 0, valueBuffer.length, 'BYTES', debugTargetEndian)
+  }
+
+  const forced = await debuggerPort.setVariable(debugIndex, true, valueBuffer)
+  if (!forced.success) return false
+  const released = await debuggerPort.setVariable(debugIndex, false)
+  return released.success
+}
+
+/**
  * Release a forced variable via the debug protocol, then remove it from
  * the store's forced-variables Map on success.
  */

@@ -17,6 +17,8 @@ import type {
   ESIDevice,
   ESIPdo,
   EtherCATChannelMapping,
+  PersistedPdo,
+  PersistedPdoEntry,
 } from '@root/middleware/shared/ports/esi-types'
 
 /**
@@ -70,7 +72,7 @@ export function esiTypeToIecType(esiType: ESIDataType, bitLen: number): string {
 /**
  * Convert PDO entries to channels for UI
  */
-export function pdoToChannels(device: ESIDevice): ESIChannel[] {
+export function pdoToChannels(device: Pick<ESIDevice, 'rxPdo' | 'txPdo'>): ESIChannel[] {
   const channels: ESIChannel[] = []
   let inputBitOffset = 0
   let outputBitOffset = 0
@@ -315,6 +317,90 @@ export function generateDefaultChannelMappings(
   }
 
   return mappings
+}
+
+/**
+ * Convert ESIPdo[] to PersistedPdo[] format.
+ * Preserves all entries including padding for complete PDO layout.
+ */
+export function persistPdos(pdos: ESIPdo[]): PersistedPdo[] {
+  return pdos.map((pdo) => ({
+    index: pdo.index,
+    name: pdo.name,
+    entries: pdo.entries.map(
+      (entry): PersistedPdoEntry => ({
+        index: entry.index,
+        subIndex: entry.subIndex,
+        bitLen: entry.bitLen,
+        name: entry.name,
+        dataType: entry.dataType,
+      }),
+    ),
+  }))
+}
+
+/**
+ * Derive slave device type from PDO structure.
+ * Uses heuristics based on PDO direction and data sizes.
+ */
+export function deriveSlaveType(device: Pick<ESIDevice, 'rxPdo' | 'txPdo'>): string {
+  const hasNonPaddingEntry = (pdos: ESIPdo[]): boolean =>
+    pdos.some((pdo) => pdo.entries.some((e) => e.name !== 'Padding' && e.index !== '0x0000'))
+
+  const allBitSized = (pdos: ESIPdo[]): boolean =>
+    pdos.every((pdo) =>
+      pdo.entries.filter((e) => e.name !== 'Padding' && e.index !== '0x0000').every((e) => e.bitLen === 1),
+    )
+
+  const hasTxData = hasNonPaddingEntry(device.txPdo)
+  const hasRxData = hasNonPaddingEntry(device.rxPdo)
+
+  if (!hasTxData && !hasRxData) return 'coupler'
+
+  const txAllBit = hasTxData && allBitSized(device.txPdo)
+  const rxAllBit = hasRxData && allBitSized(device.rxPdo)
+
+  if (hasTxData && !hasRxData) {
+    return txAllBit ? 'digital_input' : 'analog_input'
+  }
+
+  if (hasRxData && !hasTxData) {
+    return rxAllBit ? 'digital_output' : 'analog_output'
+  }
+
+  // Both directions
+  if (txAllBit && rxAllBit) return 'digital_io'
+  return 'analog_io'
+}
+
+/**
+ * Convert persisted PDOs back into the ESIChannel list they were built from.
+ *
+ * Persisted PDOs are byte-identical to the ESI PDOs they came from, so this
+ * reproduces the exact `pdoToChannels` output for a device whose channels now
+ * live in `channelInfo`/`rxPdos`/`txPdos` (every device after first enrich,
+ * and module-selected modular slaves whose device-level PDOs are empty).
+ */
+export function persistedPdosToChannels(
+  rxPdos: ReadonlyArray<PersistedPdo>,
+  txPdos: ReadonlyArray<PersistedPdo>,
+): ESIChannel[] {
+  const toEsi = (pdos: ReadonlyArray<PersistedPdo>): ESIPdo[] =>
+    pdos.map((pdo) => ({
+      index: pdo.index,
+      name: pdo.name,
+      fixed: false,
+      mandatory: false,
+      entries: pdo.entries.map((entry) => ({
+        index: entry.index,
+        subIndex: entry.subIndex,
+        bitLen: entry.bitLen,
+        name: entry.name,
+        dataType: entry.dataType,
+      })),
+    }))
+
+  return pdoToChannels({ rxPdo: toEsi(rxPdos), txPdo: toEsi(txPdos) })
 }
 
 /**
