@@ -99,6 +99,12 @@ export interface ESIPdo {
   mandatory: boolean
   /** SM index this PDO is assigned to */
   smIndex?: number
+  /**
+   * For modular (Slot/Module) devices: the slot (port/level) this module PDO
+   * belongs to.  Set on module PDOs expanded from a slot's module; absent on a
+   * coupler's fixed PDOs and on flat devices.
+   */
+  slotName?: string
   /** List of entries in this PDO */
   entries: ESIPdoEntry[]
 }
@@ -415,6 +421,8 @@ export interface ESIChannel {
   pdoIndex: string
   /** Parent PDO name */
   pdoName: string
+  /** Source slot (port/level) this channel belongs to, for modular devices. */
+  slotName?: string
   /** Entry index */
   entryIndex: string
   /** Entry subindex */
@@ -473,6 +481,11 @@ export interface PersistedPdo {
    * older persisted projects.
    */
   fixed?: boolean
+  /**
+   * For modular devices: the slot (port/level) the module owning this PDO was
+   * placed in.  Absent on flat devices and older persisted projects.
+   */
+  slotName?: string
 }
 
 /**

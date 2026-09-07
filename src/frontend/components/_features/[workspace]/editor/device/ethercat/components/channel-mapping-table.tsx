@@ -108,6 +108,12 @@ const ChannelMappingTable = ({ channels, mappings, onAliasChange }: ChannelMappi
   const inputCount = channels.filter((c) => c.direction === 'input').length
   const outputCount = channels.filter((c) => c.direction === 'output').length
 
+  // Show the source-slot column only when the device has modular channels that
+  // carry a slot (port/level) label; flat devices and older projects stay clean.
+  const hasSourceColumn = channels.some((c) => c.slotName)
+
+  const columnCount = 5 + (hasSourceColumn ? 1 : 0)
+
   return (
     <div className='flex flex-col gap-3'>
       {/* Filters */}
@@ -176,13 +182,21 @@ const ChannelMappingTable = ({ channels, mappings, onAliasChange }: ChannelMappi
               <th className='w-[22%] px-2 py-2 text-left text-xs font-medium text-neutral-700 dark:text-neutral-300'>
                 Address
               </th>
+              {hasSourceColumn && (
+                <th className='px-2 py-2 text-left text-xs font-medium text-neutral-700 dark:text-neutral-300'>
+                  Source (Port)
+                </th>
+              )}
               <th className='px-2 py-2 text-left text-xs font-medium text-neutral-700 dark:text-neutral-300'>Alias</th>
             </tr>
           </thead>
           <tbody>
             {filteredChannels.length === 0 ? (
               <tr>
-                <td colSpan={5} className='px-4 py-8 text-center text-sm text-neutral-500 dark:text-neutral-400'>
+                <td
+                  colSpan={columnCount}
+                  className='px-4 py-8 text-center text-sm text-neutral-500 dark:text-neutral-400'
+                >
                   {channels.length === 0 ? 'No channels available' : 'No channels match the current filter'}
                 </td>
               </tr>
@@ -206,6 +220,14 @@ const ChannelMappingTable = ({ channels, mappings, onAliasChange }: ChannelMappi
                     <td className='px-2 py-1.5 font-mono text-xs text-neutral-600 dark:text-neutral-400'>
                       {mapping?.iecLocation ?? ''}
                     </td>
+                    {hasSourceColumn && (
+                      <td
+                        className='truncate px-2 py-1.5 text-xs text-neutral-600 dark:text-neutral-400'
+                        title={channel.slotName}
+                      >
+                        {channel.slotName}
+                      </td>
+                    )}
                     <td className='px-2 py-1.5'>
                       <AliasCell channelId={channel.id} alias={mapping?.alias ?? ''} onAliasChange={onAliasChange} />
                     </td>

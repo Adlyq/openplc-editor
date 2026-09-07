@@ -281,7 +281,7 @@ export function buildModuleProcessImage(
     }
   }
 
-  const shiftPdo = (pdo: ESIPdo, slotOffset: number): ESIPdo => {
+  const shiftPdo = (pdo: ESIPdo, slotOffset: number, slotName: string): ESIPdo => {
     const entries: ESIPdoEntry[] = pdo.entries.map((entry) => ({
       ...entry,
       index: offsetIndex(entry.index, slotOffset, layout.indexIncrement),
@@ -290,6 +290,9 @@ export function buildModuleProcessImage(
       ...pdo,
       index: offsetIndex(pdo.index, slotOffset, layout.pdoIncrement),
       entries,
+      // Remember which port/level this module PDO belongs to so the channel
+      // mappings UI can label each process-data address with its source slot.
+      slotName,
     }
   }
 
@@ -300,8 +303,8 @@ export function buildModuleProcessImage(
     const moduleDef = modules.find((m) => m.ident === selection.moduleIdent)
     if (!moduleDef) return
 
-    for (const pdo of moduleDef.rxPdos) rxPdo.push(shiftPdo(pdo, slotOffset))
-    for (const pdo of moduleDef.txPdos) txPdo.push(shiftPdo(pdo, slotOffset))
+    for (const pdo of moduleDef.rxPdos) rxPdo.push(shiftPdo(pdo, slotOffset, slot.name))
+    for (const pdo of moduleDef.txPdos) txPdo.push(shiftPdo(pdo, slotOffset, slot.name))
   })
 
   return { rxPdo, txPdo }

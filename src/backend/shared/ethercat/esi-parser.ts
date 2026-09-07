@@ -94,6 +94,7 @@ export function pdoToChannels(device: Pick<ESIDevice, 'rxPdo' | 'txPdo'>): ESICh
         direction: 'input',
         pdoIndex: pdo.index,
         pdoName: pdo.name,
+        slotName: pdo.slotName,
         entryIndex: entry.index,
         entrySubIndex: entry.subIndex,
         name: entry.name,
@@ -124,6 +125,7 @@ export function pdoToChannels(device: Pick<ESIDevice, 'rxPdo' | 'txPdo'>): ESICh
         direction: 'output',
         pdoIndex: pdo.index,
         pdoName: pdo.name,
+        slotName: pdo.slotName,
         entryIndex: entry.index,
         entrySubIndex: entry.subIndex,
         name: entry.name,
@@ -332,6 +334,7 @@ export function persistPdos(pdos: ESIPdo[]): PersistedPdo[] {
     index: pdo.index,
     name: pdo.name,
     fixed: pdo.fixed,
+    slotName: pdo.slotName,
     entries: pdo.entries.map(
       (entry): PersistedPdoEntry => ({
         index: entry.index,
@@ -395,6 +398,7 @@ export function persistedPdosToChannels(
       index: pdo.index,
       name: pdo.name,
       fixed: pdo.fixed ?? false,
+      slotName: pdo.slotName,
       mandatory: false,
       entries: pdo.entries.map((entry) => ({
         index: entry.index,

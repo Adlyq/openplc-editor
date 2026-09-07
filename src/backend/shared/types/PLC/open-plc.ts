@@ -711,6 +711,7 @@ const PersistedPdoSchema = z.object({
   name: z.string(),
   entries: z.array(PersistedPdoEntrySchema),
   fixed: z.boolean().optional(),
+  slotName: z.string().optional(),
 })
 
 const PersistedChannelInfoSchema = z.object({

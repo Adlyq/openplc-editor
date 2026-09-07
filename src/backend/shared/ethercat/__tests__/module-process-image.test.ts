@@ -374,6 +374,19 @@ describe('persistedPdosToChannels', () => {
     expect(channels).toHaveLength(1)
     expect(channels[0].pdoIndex).toBe('0x1a90')
   })
+
+  it('tags module channels and persisted PDOs with their source slot (port)', () => {
+    const enriched = buildModuleEnrich(device, selections)
+    const slotNames = device.slots!.map((s) => s.name)
+    // Module PDOs (the fixed coupler PDOs are excluded) know their slot.
+    expect(enriched.rxPdos.every((p) => p.slotName !== undefined && slotNames.includes(p.slotName!))).toBe(true)
+    expect(enriched.txPdos.every((p) => p.slotName !== undefined && slotNames.includes(p.slotName!))).toBe(true)
+    // The source slot survives the round-trip to the channel list the Channel
+    // Mappings tab renders.
+    const rebuilt = persistedPdosToChannels(enriched.rxPdos, enriched.txPdos)
+    expect(rebuilt.length).toBeGreaterThan(0)
+    expect(rebuilt.every((c) => c.slotName !== undefined && slotNames.includes(c.slotName!))).toBe(true)
+  })
 })
 
 describe('defaultModuleSelections', () => {
